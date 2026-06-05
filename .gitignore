@@ -1,0 +1,11 @@
+# Binario compilado
+/voxywatch-probe
+dist/
+*.exe
+
+# Go
+/vendor/
+
+# Editor / OS
+*.swp
+.DS_Store
