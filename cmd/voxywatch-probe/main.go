@@ -37,9 +37,10 @@ func main() {
 		defer t.Stop()
 		for range t.C {
 			sip, rtp, rtcp, other := cap.Counts()
+			self, peer := cap.RtpDirs()
 			sent, errs := snd.Stats()
-			log.Printf("[stats] sip=%d rtp=%d rtcp=%d other=%d | enviados=%d errores=%d",
-				sip, rtp, rtcp, other, sent, errs)
+			log.Printf("[stats] sip=%d rtp=%d (saliente=%d entrante=%d) rtcp=%d other=%d | enviados=%d errores=%d",
+				sip, rtp, self, peer, rtcp, other, sent, errs)
 		}
 	}()
 
