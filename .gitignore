@@ -9,3 +9,5 @@ dist/
 # Editor / OS
 *.swp
 .DS_Store
+
+voxywatch-probe-linux-*
