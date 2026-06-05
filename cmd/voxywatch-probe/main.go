@@ -23,6 +23,9 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 	log.Printf("VoxyWatch Probe v%s — iniciando", version)
+	if cfg.IfaceAuto {
+		log.Printf("[auto] interfaz detectada automáticamente: %s", cfg.Iface)
+	}
 
 	snd := sender.New(cfg.Transport, cfg.HEPServer)
 	cap, err := capture.New(cfg, snd)
