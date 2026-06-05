@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# VoxyWatch Probe — instalador preconfigurado (1 comando).
+# VoxyWatch Probe — preconfigured installer (1 command).
 #   curl -fsSL .../install.sh | sudo bash -s -- --server VOXYWATCH:9060
-# Deja el agente como servicio systemd, con la interfaz auto-detectada y permiso de
-# captura acotado (CAP_NET_RAW vía systemd, sin root permanente). No toca el SBC.
+# Leaves the agent as a systemd service, with the auto-detected interface and limited
+# capture privilege (CAP_NET_RAW via systemd, no permanent root). It does not touch the SBC.
 set -euo pipefail
 
 REPO="VoxyWatch/voxywatch-probe"
@@ -22,42 +22,42 @@ while [ $# -gt 0 ]; do
     --iface)  IFACE="$2"; shift 2;;
     --mode)   MODE="$2"; shift 2;;
     --transport) TRANSPORT="$2"; shift 2;;
-    *) die "argumento desconocido: $1";;
+    *) die "unknown argument: $1";;
   esac
 done
 
-[ "$(id -u)" = "0" ] || die "ejecuta como root (sudo)."
-[ -n "$SERVER" ] || die "falta --server VOXYWATCH_HOST:9060 (a dónde enviar la captura)."
+[ "$(id -u)" = "0" ] || die "run as root (sudo)."
+[ -n "$SERVER" ] || die "missing --server VOXYWATCH_HOST:9060 (where to send the capture)."
 echo "$SERVER" | grep -q ':' || SERVER="$SERVER:9060"
 
-# ── Arquitectura ──────────────────────────────────────────────────────────────
+# ── Architecture ──────────────────────────────────────────────────────────────
 case "$(uname -m)" in
   x86_64|amd64)  ARCH=amd64;;
   aarch64|arm64) ARCH=arm64;;
-  *) die "arquitectura no soportada: $(uname -m) (soportadas: x86_64, aarch64)";;
+  *) die "unsupported architecture: $(uname -m) (supported: x86_64, aarch64)";;
 esac
 ASSET="voxywatch-probe-linux-${ARCH}"
 
-# ── Dependencia libpcap (runtime) ─────────────────────────────────────────────
+# ── libpcap dependency (runtime) ─────────────────────────────────────────────
 if ! ldconfig -p 2>/dev/null | grep -q libpcap; then
-  c_y "instalando libpcap…"
+  c_y "installing libpcap…"
   if   command -v apt-get >/dev/null; then apt-get update -qq && apt-get install -y -qq libpcap0.8 || apt-get install -y -qq libpcap0.8t64;
   elif command -v dnf     >/dev/null; then dnf install -y -q libpcap;
   elif command -v yum     >/dev/null; then yum install -y -q libpcap;
-  else c_y "instala libpcap manualmente si el agente no arranca."; fi
+  else c_y "install libpcap manually if the agent does not start."; fi
 fi
 
-# ── Descargar binario del último release ──────────────────────────────────────
+# ── Download binary from the latest release ──────────────────────────────────────
 URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
-c_y "descargando ${ASSET}…"
-curl -fsSL "$URL" -o "$BIN" || die "no se pudo bajar $URL"
+c_y "downloading ${ASSET}…"
+curl -fsSL "$URL" -o "$BIN" || die "could not download $URL"
 chmod +x "$BIN"
-c_g "✓ binario en $BIN"
+c_g "✓ binary at $BIN"
 
-# ── Servicio systemd (usuario efímero + CAP_NET_RAW, sin root permanente) ─────
+# ── systemd service (ephemeral user + CAP_NET_RAW, no permanent root) ─────
 cat > "$UNIT" <<EOF
 [Unit]
-Description=VoxyWatch Probe — captura SIP/RTP/RTCP hacia VoxyWatch
+Description=VoxyWatch Probe — captures SIP/RTP/RTCP toward VoxyWatch
 After=network-online.target
 Wants=network-online.target
 
@@ -80,11 +80,11 @@ systemctl enable --now voxywatch-probe.service >/dev/null 2>&1 || systemctl rest
 sleep 2
 
 if systemctl is-active --quiet voxywatch-probe.service; then
-  c_g "✓ VoxyWatch Probe instalado y corriendo."
-  echo "  destino : $SERVER   interfaz: $IFACE   modo: $MODE   site: $SITE_ID"
-  echo "  ver logs: journalctl -u voxywatch-probe -f"
-  echo "  detener : systemctl stop voxywatch-probe"
+  c_g "✓ VoxyWatch Probe installed and running."
+  echo "  target  : $SERVER   interface: $IFACE   mode: $MODE   site: $SITE_ID"
+  echo "  view logs: journalctl -u voxywatch-probe -f"
+  echo "  stop     : systemctl stop voxywatch-probe"
 else
-  c_r "el servicio no quedó activo. Revisa: journalctl -u voxywatch-probe -n 30"
+  c_r "the service did not become active. Check: journalctl -u voxywatch-probe -n 30"
   exit 1
 fi

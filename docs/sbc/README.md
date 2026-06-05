@@ -1,58 +1,58 @@
-# Compatibilidad de SBC / PBX con VoxyWatch
+# SBC / PBX compatibility with VoxyWatch
 
-VoxyWatch captura señalización (SIP), media (RTP/RTCP) y métricas de calidad de
-cualquier central o SBC. Hay **dos formas** de hacer llegar los datos:
+VoxyWatch captures signaling (SIP), media (RTP/RTCP) and quality metrics from
+any PBX or SBC. There are **two ways** to get the data in:
 
-| Vía | Qué es | Cuándo se usa | Qué obtienes |
-|-----|--------|---------------|--------------|
-| **🛰️ VoxyWatch Probe** | Nuestro **agente propio** que se instala en el host (o en un equipo con espejo de tráfico) y **esnifa la red** de forma pasiva. No toca la configuración del SBC. | Siempre que tengamos acceso al host del SBC o a un **puerto espejo/SPAN**. | SIP + **RTP (audio)** + RTCP + **métricas de calidad** (jitter, pérdida, MOS, RTT, one-way audio, host/red). **Lo más completo.** |
-| **🔌 HEP nativo** | El propio SBC envía a VoxyWatch por el protocolo **HEP** (el mismo de Homer). | SBC que ya hablan HEP, o **propietarios cerrados** donde no podemos instalar nada. | Lo que el fabricante decida mandar (normalmente SIP, a veces RTCP; rara vez RTP/audio). |
+| Path | What it is | When to use it | What you get |
+|------|------------|----------------|--------------|
+| **🛰️ VoxyWatch Probe** | Our **own agent**, installed on the host (or on a box with a traffic mirror) that **sniffs the network** passively. It does not touch the SBC configuration. | Whenever we have access to the SBC host or a **mirror/SPAN port**. | SIP + **RTP (audio)** + RTCP + **quality metrics** (jitter, loss, MOS, RTT, one-way audio, host/network). **The most complete.** |
+| **🔌 Native HEP** | The SBC itself sends to VoxyWatch over the **HEP** protocol (the same one Homer uses). | SBCs that already speak HEP, or **closed/proprietary** ones where we can't install anything. | Whatever the vendor chooses to send (usually SIP, sometimes RTCP; rarely RTP/audio). |
 
-> **Regla simple:** si **podemos** meternos al equipo → **Probe** (control total y audio).
-> Si **no podemos** (caja cerrada del fabricante) → **HEP nativo**, lo que mande.
+> **Simple rule:** if we **can** get into the box → **Probe** (full control and audio).
+> If we **can't** (vendor's closed box) → **native HEP**, whatever it sends.
 
-El **Probe funciona con cualquier SBC** porque es captura pasiva de red — no depende del
-fabricante. La columna "Probe" abajo indica dónde ya lo probamos y documentamos.
+The **Probe works with any SBC** because it's passive network capture — it doesn't depend on
+the vendor. The "Probe" column below shows where we've already tested and documented it.
 
 ---
 
-## Matriz por modelo
+## Per-model matrix
 
-Estado: ✅ probado y documentado · 🧪 en pruebas · 📋 planeado · — n/a
+Status: ✅ tested and documented · 🧪 in testing · 📋 planned · — n/a
 
-### Open source (controlamos el equipo → Probe + opcional HEP nativo)
+### Open source (we control the box → Probe + optional native HEP)
 
-| SBC / PBX | Tipo | Probe (agente) | HEP nativo | Guía |
-|-----------|------|----------------|------------|------|
+| SBC / PBX | Type | Probe (agent) | Native HEP | Guide |
+|-----------|------|---------------|------------|-------|
 | **Asterisk** | PBX/B2BUA | ✅ SIP+RTP+RTCP | ✅ `res_hep` (SIP) / `res_hep_rtcp` (RTCP) | [asterisk.md](asterisk.md) |
-| **FreeSWITCH** | PBX/SBC | 📋 | 📋 (mod_sofia/Homer) | _pendiente_ |
-| **Kamailio** | SIP proxy/SBC | 📋 | 📋 (módulo `siptrace`/HEP) | _pendiente_ |
-| **OpenSIPS** | SIP proxy/SBC | 📋 | 📋 (`proto_hep`/`siptrace`) | _pendiente_ |
-| **drachtio / rtpengine** | SBC media | 📋 | 📋 (rtpengine→Homer) | _pendiente_ |
+| **FreeSWITCH** | PBX/SBC | 📋 | 📋 (mod_sofia/Homer) | _pending_ |
+| **Kamailio** | SIP proxy/SBC | 📋 | 📋 (`siptrace`/HEP module) | _pending_ |
+| **OpenSIPS** | SIP proxy/SBC | 📋 | 📋 (`proto_hep`/`siptrace`) | _pending_ |
+| **drachtio / rtpengine** | media SBC | 📋 | 📋 (rtpengine→Homer) | _pending_ |
 
-### Propietarios (caja cerrada → normalmente HEP nativo; Probe sólo con SPAN)
+### Proprietary (closed box → usually native HEP; Probe only via SPAN)
 
-| SBC | Fabricante | HEP nativo | Probe (vía SPAN) | Guía |
-|-----|-----------|------------|------------------|------|
-| **Acme Packet / OCSBC** | Oracle | 📋 (Comm Monitor / packet-trace) | 🧪 | _pendiente_ |
-| **SBC SWe / 5000/7000** | Ribbon (Sonus) | 📋 | 🧪 | _pendiente_ |
-| **Mediant** | AudioCodes | 📋 (SIPRec / syslog) | 🧪 | _pendiente_ |
-| **CUBE** | Cisco | 📋 (no HEP; SIPRec) | 🧪 | _pendiente_ |
-| **Session Manager** | Avaya | 📋 | 🧪 | _pendiente_ |
-| **Perimeta** | Metaswitch/Microsoft | 📋 | 🧪 | _pendiente_ |
+| SBC | Vendor | Native HEP | Probe (via SPAN) | Guide |
+|-----|--------|------------|------------------|-------|
+| **Acme Packet / OCSBC** | Oracle | 📋 (Comm Monitor / packet-trace) | 🧪 | _pending_ |
+| **SBC SWe / 5000/7000** | Ribbon (Sonus) | 📋 | 🧪 | _pending_ |
+| **Mediant** | AudioCodes | 📋 (SIPRec / syslog) | 🧪 | _pending_ |
+| **CUBE** | Cisco | 📋 (no HEP; SIPRec) | 🧪 | _pending_ |
+| **Session Manager** | Avaya | 📋 | 🧪 | _pending_ |
+| **Perimeta** | Metaswitch/Microsoft | 📋 | 🧪 | _pending_ |
 
-> Para propietarios sin HEP, muchas veces se usa **SIPREC** (grabación estándar) hacia
-> VoxyWatch, o un **puerto espejo** hacia un host con el Probe. Se documenta caso por caso.
+> For proprietary boxes without HEP, **SIPREC** (standard recording) toward VoxyWatch is
+> often used, or a **mirror port** toward a host running the Probe. Documented case by case.
 
 ---
 
-## Cómo agregar un SBC nuevo a esta sección
+## How to add a new SBC to this section
 
-1. Copia [`_template.md`](_template.md) a `docs/sbc/<modelo>.md`.
-2. Documenta: cómo se captura (Probe y/o HEP nativo), pasos exactos, capturas de pantalla,
-   qué datos llegan, limitaciones.
-3. Añádelo a la matriz de arriba con su estado.
-4. Marca ✅ sólo cuando esté **probado de extremo a extremo** (llamada real → audio/métricas en el portal).
+1. Copy [`_template.md`](_template.md) to `docs/sbc/<model>.md`.
+2. Document: how capture works (Probe and/or native HEP), exact steps, screenshots,
+   what data arrives, limitations.
+3. Add it to the matrix above with its status.
+4. Mark ✅ only when it's **tested end to end** (real call → audio/metrics in the portal).
 
-**Metodología de laboratorio:** montamos el SBC, lo probamos con el Probe (o su HEP),
-verificamos SIP + audio + métricas en VoxyWatch, documentamos, y pasamos al siguiente.
+**Lab methodology:** we set up the SBC, test it with the Probe (or its HEP),
+verify SIP + audio + metrics in VoxyWatch, document it, and move on to the next one.

@@ -1,28 +1,28 @@
-# <Modelo de SBC> → VoxyWatch (plantilla)
+# <SBC model> → VoxyWatch (template)
 
-> Copia este archivo a `docs/sbc/<modelo>.md` y rellénalo. Borra estas notas.
+> Copy this file to `docs/sbc/<model>.md` and fill it in. Delete these notes.
 
-**Fabricante:** ·  **Tipo:** (PBX / SBC / proxy) ·  **Open source:** sí/no ·  **Estado:** 📋/🧪/✅
+**Vendor:** ·  **Type:** (PBX / SBC / proxy) ·  **Open source:** yes/no ·  **Status:** 📋/🧪/✅
 
-## Resumen
-Una línea: qué vías de captura aplican (Probe / HEP nativo / SIPREC) y qué se obtiene.
+## Summary
+One line: which capture paths apply (Probe / native HEP / SIPREC) and what you get.
 
-## Opción A — VoxyWatch Probe (si hay acceso al host o SPAN)
-- Dónde se instala (host del SBC / equipo con puerto espejo).
-- Pasos de instalación (idealmente el `install.sh`).
-- Verificación (qué se ve en el portal).
-- Limitaciones (SRTP, interfaces, etc.).
+## Option A — VoxyWatch Probe (if you have host access or SPAN)
+- Where it's installed (SBC host / box with a mirror port).
+- Install steps (ideally the `install.sh`).
+- Verification (what you see in the portal).
+- Limitations (SRTP, interfaces, etc.).
 
-## Opción B — HEP nativo / SIPREC (si el equipo lo soporta)
-- Config exacta (con bloques de configuración reales).
-- Módulos / licencias necesarias.
-- Qué datos llegan (SIP, RTCP, RTP…).
+## Option B — Native HEP / SIPREC (if the box supports it)
+- Exact config (with real configuration blocks).
+- Required modules / licenses.
+- What data arrives (SIP, RTCP, RTP…).
 
-## Qué se logra
-- [ ] SIP (señalización)
-- [ ] RTP / audio reconstruible
-- [ ] RTCP / métricas de calidad
-- [ ] Host / red
+## What you get
+- [ ] SIP (signaling)
+- [ ] RTP / reconstructable audio
+- [ ] RTCP / quality metrics
+- [ ] Host / network
 
-## Notas de laboratorio
-Versión probada, fecha, gotchas encontrados.
+## Lab notes
+Tested version, date, gotchas found.
