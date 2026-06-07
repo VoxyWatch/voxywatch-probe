@@ -22,7 +22,13 @@ agent works unchanged. Validated end to end in the lab (see notes below).
 The agent installs on the **same server where FreeSWITCH runs** and listens to the network
 traffic. It does not modify FreeSWITCH.
 
-### Install (1 command)
+### Requirements
+- Linux (Debian/Ubuntu/RHEL…). Needs `libpcap` (usually ships with `tcpdump`).
+- Root access **for the install only** — afterwards the service runs with limited privileges (`CAP_NET_RAW`, no root).
+
+### A.1 — FreeSWITCH on bare metal (or a VM)
+
+Install on the **same host** where FreeSWITCH runs:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/VoxyWatch/voxywatch-probe/master/install.sh | sudo bash -s -- --server YOUR_VOXYWATCH:9060
@@ -30,27 +36,52 @@ curl -fsSL https://raw.githubusercontent.com/VoxyWatch/voxywatch-probe/master/in
 
 Replace `YOUR_VOXYWATCH` with the IP or host of your VoxyWatch server (HEP port, usually 9060).
 
-That's it. The installer:
-- downloads the binary for your architecture (x64 / arm64),
-- grants it capture permission,
-- auto-detects the network interface,
-- leaves it as a **service** (starts on boot, restarts if it crashes).
+That's it. The installer downloads the right binary (x64 / arm64), grants capture permission,
+**auto-detects the network interface**, and leaves it as a **systemd service** (starts on boot,
+restarts on crash). To pin a specific NIC instead of auto-detect, add `--iface eth0`.
 
-> **Running FreeSWITCH in Docker?** Run the container with `--network host` (or run the Probe
-> inside the same network namespace) so the agent sees the SIP/RTP traffic. With a bridged
-> network, capture on the host `docker0`/veth interface instead.
+### A.2 — FreeSWITCH in Docker
+
+The Probe must see the container's SIP/RTP packets. Two cases:
+
+**a) Container runs with `--network host`** (recommended, and what we test against) — the
+container shares the host network stack, so install the Probe **on the host** exactly as in A.1.
+It will see the traffic on the host's physical NIC.
+
+```bash
+# on the Docker host
+curl -fsSL https://raw.githubusercontent.com/VoxyWatch/voxywatch-probe/master/install.sh | sudo bash -s -- --server YOUR_VOXYWATCH:9060
+```
+
+> If FreeSWITCH binds its SIP/RTP to a specific address (e.g. a loopback or a single IP for a
+> self-contained box), point the Probe at that interface with `--iface lo` (or the right NIC).
+
+**b) Container runs on a bridged network** (default `bridge`) — the media lives on the Docker
+bridge. Install the Probe on the host and capture the bridge/veth interface:
+
+```bash
+# find the bridge (usually docker0, or br-xxxx for a custom network)
+ip -br link show type bridge
+curl -fsSL https://raw.githubusercontent.com/VoxyWatch/voxywatch-probe/master/install.sh | sudo bash -s -- --server YOUR_VOXYWATCH:9060 --iface docker0
+```
+
+Alternatively, run FreeSWITCH with `--network host` (simplest) so capture happens on a normal NIC.
 
 ### Verify
 ```bash
 systemctl status voxywatch-probe          # should be "active (running)"
-journalctl -u voxywatch-probe -f          # you'll see: [stats] sip=.. rtp=.. enviados=..
+journalctl -u voxywatch-probe -f          # [capture] libpcap iface=… ; [stats] sip=.. rtp=.. enviados=..
 ```
-Make a test call and check it in the VoxyWatch portal (Calls / CDR). The call must include
-**audio** (play button).
+Place a test call, then open the VoxyWatch portal (Calls / CDR). The call should appear with
+**audio** (play button). To change the captured interface later, edit `--iface` in the unit
+(`/etc/systemd/system/voxywatch-probe.service`) and `systemctl restart voxywatch-probe`.
 
-### Requirements
-- Linux (Debian/Ubuntu/RHEL…). Needs `libpcap` (usually comes with `tcpdump`).
-- Root access to install (only during installation; afterwards it runs with limited privileges).
+### Troubleshooting
+- **SIP shows up but no RTP / no audio:** the Probe is on the wrong interface — the media is on
+  a different NIC/bridge than the signaling. Set `--iface` to where the RTP actually flows.
+- **Nothing is captured:** check the host can reach `YOUR_VOXYWATCH:9060/udp` (HEP), and that the
+  service is `active`. `journalctl -u voxywatch-probe` shows the chosen interface and packet counts.
+- **`libpcap` missing:** install `tcpdump` (pulls in `libpcap`), then restart the service.
 
 ---
 
