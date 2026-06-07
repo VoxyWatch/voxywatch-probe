@@ -25,7 +25,7 @@ Status: ✅ tested and documented · 🧪 in testing · 📋 planned · — n/a
 | SBC / PBX | Type | Probe (agent) | Native HEP | Guide |
 |-----------|------|---------------|------------|-------|
 | **Asterisk** | PBX/B2BUA | ✅ SIP+RTP+RTCP | ✅ `res_hep` (SIP) / `res_hep_rtcp` (RTCP) | [asterisk.md](asterisk.md) |
-| **FreeSWITCH** | PBX/SBC | 📋 | 📋 (mod_sofia/Homer) | _pending_ |
+| **FreeSWITCH** | PBX/SBC | ✅ SIP+RTP (8 codecs) | ✅ Sofia `capture-server` (SIP) | [freeswitch.md](freeswitch.md) |
 | **Kamailio** | SIP proxy/SBC | 📋 | 📋 (`siptrace`/HEP module) | _pending_ |
 | **OpenSIPS** | SIP proxy/SBC | 📋 | 📋 (`proto_hep`/`siptrace`) | _pending_ |
 | **drachtio / rtpengine** | media SBC | 📋 | 📋 (rtpengine→Homer) | _pending_ |
