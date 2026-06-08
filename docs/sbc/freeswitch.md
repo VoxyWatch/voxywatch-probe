@@ -88,7 +88,7 @@ Place a test call, then open the VoxyWatch portal (Calls / CDR). The call should
 ## Option B — Native HEP (Sofia capture), signaling only
 
 If you don't want to install anything and **SIP** alone is enough (no audio), FreeSWITCH can
-send its signaling to VoxyWatch over HEP (the same protocol Homer uses), straight from
+send its signaling to VoxyWatch over HEP (the de-facto open SIP-capture protocol), straight from
 mod_sofia.
 
 ### 1. Point the Sofia profile at VoxyWatch

@@ -6,7 +6,7 @@ any PBX or SBC. There are **two ways** to get the data in:
 | Path | What it is | When to use it | What you get |
 |------|------------|----------------|--------------|
 | **🛰️ VoxyWatch Probe** | Our **own agent**, installed on the host (or on a box with a traffic mirror) that **sniffs the network** passively. It does not touch the SBC configuration. | Whenever we have access to the SBC host or a **mirror/SPAN port**. | SIP + **RTP (audio)** + RTCP + **quality metrics** (jitter, loss, MOS, RTT, one-way audio, host/network). **The most complete.** |
-| **🔌 Native HEP** | The SBC itself sends to VoxyWatch over the **HEP** protocol (the same one Homer uses). | SBCs that already speak HEP, or **closed/proprietary** ones where we can't install anything. | Whatever the vendor chooses to send (usually SIP, sometimes RTCP; rarely RTP/audio). |
+| **🔌 Native HEP** | The SBC itself sends to VoxyWatch over the **HEP** protocol (the de-facto open SIP-capture protocol). | SBCs that already speak HEP, or **closed/proprietary** ones where we can't install anything. | Whatever the vendor chooses to send (usually SIP, sometimes RTCP; rarely RTP/audio). |
 
 > **Simple rule:** if we **can** get into the box → **Probe** (full control and audio).
 > If we **can't** (vendor's closed box) → **native HEP**, whatever it sends.
@@ -28,7 +28,7 @@ Status: ✅ tested and documented · 🧪 in testing · 📋 planned · — n/a
 | **FreeSWITCH** | PBX/SBC | ✅ SIP+RTP (8 codecs) | ✅ Sofia `capture-server` (SIP) | [freeswitch.md](freeswitch.md) |
 | **Kamailio** | SIP proxy/SBC | 📋 | 📋 (`siptrace`/HEP module) | _pending_ |
 | **OpenSIPS** | SIP proxy/SBC | 📋 | 📋 (`proto_hep`/`siptrace`) | _pending_ |
-| **drachtio / rtpengine** | media SBC | 📋 | 📋 (rtpengine→Homer) | _pending_ |
+| **drachtio / rtpengine** | media SBC | 📋 | 📋 (rtpengine→HEP) | _pending_ |
 
 ### Proprietary (closed box → usually native HEP; Probe only via SPAN)
 
