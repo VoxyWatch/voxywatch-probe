@@ -62,10 +62,18 @@ sudo ./voxywatch-probe -hs YOUR_VOXYWATCH:9060        # auto-detected interface
 
 Requires CGO + libpcap (captures traffic in both directions):
 ```bash
-# with Docker (no local Go):
+# amd64 (with Docker, no local Go):
 docker run --rm -v "$PWD":/src -w /src golang:1.23-bookworm \
-  sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -o voxywatch-probe ./cmd/voxywatch-probe"
+  sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -o voxywatch-probe-linux-amd64 ./cmd/voxywatch-probe"
+
+# arm64 (native build in an emulated arm64 container — needs binfmt:
+#   docker run --privileged --rm tonistiigi/binfmt --install arm64 ):
+docker run --rm --platform linux/arm64 -v "$PWD":/src -w /src golang:1.23-bookworm \
+  sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags='-s -w' -o voxywatch-probe-linux-arm64 ./cmd/voxywatch-probe"
 ```
+
+Releases ship both `voxywatch-probe-linux-amd64` and `voxywatch-probe-linux-arm64`;
+`install.sh` auto-detects the host architecture (`x86_64`/`aarch64`) and downloads the matching asset.
 
 ## Structure
 
