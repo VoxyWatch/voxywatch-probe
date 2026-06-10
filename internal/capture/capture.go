@@ -4,9 +4,13 @@
 package capture
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/gopacket"
@@ -23,7 +27,15 @@ type Capturer struct {
 	handle *pcap.Handle
 	snd    *sender.Sender
 	sipSet map[uint16]bool
-	counts struct{ sip, rtp, rtcp, other, rtpSelf, rtpPeer uint64 }
+	counts struct {
+		sip, rtp, rtcp, other, rtpSelf, rtpPeer, pciSuppressed uint64
+	}
+	// Modo PCI (F1c): SSRC cuyo RTP NO se envía durante una ventana de pago (corte en ORIGEN).
+	// Se relee de pciPath (JSON con calls[].flows.ssrc_*) en caliente. Vacío → sin efecto.
+	pciSSRCs     map[uint32]bool
+	pciPath      string
+	pciMtime     int64
+	pciLastCheck int64
 }
 
 func isPrivate(ip net.IP) bool {
@@ -41,10 +53,27 @@ func New(cfg *config.Config, snd *sender.Sender) (*Capturer, error) {
 	if iface == "" {
 		iface = "any"
 	}
-	// promisc=true + timeout corto para baja latencia. Snaplen del config.
-	h, err := pcap.OpenLive(iface, int32(cfg.Snaplen), true, 100*time.Millisecond)
-	if err != nil {
-		return nil, fmt.Errorf("pcap.OpenLive(%s): %w (¿permisos root/CAP_NET_RAW?)", iface, err)
+	// Handle con IMMEDIATE MODE: entrega cada paquete en cuanto llega, sin esperar a que
+	// se llene el buffer del kernel. Sin esto, en loopback (lo/any) la captura se "congela"
+	// intermitentemente (el buffer no se vacía a tiempo y ReadPacketData se atasca). Además
+	// subimos el buffer a 8 MB para absorber ráfagas. Fallback a OpenLive si algo falla.
+	var h *pcap.Handle
+	ih, ierr := pcap.NewInactiveHandle(iface)
+	if ierr == nil {
+		_ = ih.SetSnapLen(int(cfg.Snaplen))
+		_ = ih.SetPromisc(true)
+		_ = ih.SetTimeout(100 * time.Millisecond)
+		_ = ih.SetImmediateMode(true)
+		_ = ih.SetBufferSize(8 * 1024 * 1024)
+		h, ierr = ih.Activate()
+		ih.CleanUp()
+	}
+	if ierr != nil || h == nil {
+		var err error
+		h, err = pcap.OpenLive(iface, int32(cfg.Snaplen), true, 100*time.Millisecond)
+		if err != nil {
+			return nil, fmt.Errorf("pcap.OpenLive(%s): %w (¿permisos root/CAP_NET_RAW?)", iface, err)
+		}
 	}
 	if cfg.BPF != "" {
 		if err := h.SetBPFFilter(cfg.BPF); err != nil {
@@ -52,7 +81,12 @@ func New(cfg *config.Config, snd *sender.Sender) (*Capturer, error) {
 			return nil, fmt.Errorf("BPF %q: %w", cfg.BPF, err)
 		}
 	}
-	c := &Capturer{cfg: cfg, handle: h, snd: snd, sipSet: map[uint16]bool{}}
+	pciPath := os.Getenv("VW_PROBE_PCI_FILE")
+	if pciPath == "" {
+		pciPath = "/etc/voxywatch-probe/pci_suppress.json"
+	}
+	c := &Capturer{cfg: cfg, handle: h, snd: snd, sipSet: map[uint16]bool{},
+		pciSSRCs: map[uint32]bool{}, pciPath: pciPath}
 	for _, p := range cfg.SIPPorts {
 		c.sipSet[p] = true
 	}
@@ -76,6 +110,57 @@ func (c *Capturer) Run() error {
 		c.handle_(pkt)
 	}
 	return nil
+}
+
+// reloadPCI relee pciPath (throttle 1s + mtime) → pciSSRCs. Mismo formato que escribe el portal
+// (calls[].flows.ssrc_caller/ssrc_callee). Ausente/vacío → mapa vacío → sin efecto.
+func (c *Capturer) reloadPCI() {
+	now := time.Now().Unix()
+	if now-c.pciLastCheck < 1 {
+		return
+	}
+	c.pciLastCheck = now
+	fi, err := os.Stat(c.pciPath)
+	if err != nil {
+		if len(c.pciSSRCs) > 0 {
+			c.pciSSRCs = map[uint32]bool{}
+			c.pciMtime = 0
+		}
+		return
+	}
+	if fi.ModTime().Unix() == c.pciMtime {
+		return
+	}
+	c.pciMtime = fi.ModTime().Unix()
+	data, err := os.ReadFile(c.pciPath)
+	if err != nil {
+		return
+	}
+	var doc struct {
+		Calls []struct {
+			Flows struct {
+				SsrcCaller string `json:"ssrc_caller"`
+				SsrcCallee string `json:"ssrc_callee"`
+			} `json:"flows"`
+		} `json:"calls"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return
+	}
+	set := map[uint32]bool{}
+	for _, cl := range doc.Calls {
+		for _, s := range []string{cl.Flows.SsrcCaller, cl.Flows.SsrcCallee} {
+			if s == "" || s == "Unknown" || s == "None" {
+				continue
+			}
+			if v, e := strconv.ParseUint(s, 10, 32); e == nil {
+				set[uint32(v)] = true
+			} else if v, e := strconv.ParseUint(s, 16, 32); e == nil {
+				set[uint32(v)] = true
+			}
+		}
+	}
+	c.pciSSRCs = set
 }
 
 func (c *Capturer) handle_(pkt gopacket.Packet) {
@@ -114,6 +199,15 @@ func (c *Capturer) handle_(pkt gopacket.Packet) {
 			c.counts.rtpSelf++
 		} else {
 			c.counts.rtpPeer++
+		}
+		// Modo PCI (F1c): no enviar el RTP de un SSRC en ventana de pago → corte en ORIGEN,
+		// el dato sensible no sale del entorno seguro. reloadPCI() está auto-throttled.
+		c.reloadPCI()
+		if len(c.pciSSRCs) > 0 && len(payload) >= 12 {
+			if c.pciSSRCs[binary.BigEndian.Uint32(payload[8:12])] {
+				c.counts.pciSuppressed++
+				return
+			}
 		}
 	}
 
