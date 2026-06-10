@@ -58,6 +58,19 @@ sudo ./voxywatch-probe -hs YOUR_VOXYWATCH:9060        # auto-detected interface
 | `-t` | `udp` | HEP transport: `udp` / `tcp` |
 | `-capture-id` | `2001` | Agent/site ID |
 
+## 🔒 PCI-DSS suppression (at the source)
+
+For PCI-DSS compliance, the Probe can **drop the RTP of a payment window at the source** — the
+sensitive audio (card / CVV) **never leaves the secure environment**, never travels the network,
+never reaches VoxyWatch. This is the strictest option (smallest PCI scope).
+
+It hot-reloads `pci_suppress.json` (path via `VW_PROBE_PCI_FILE`, default
+`/etc/voxywatch-probe/pci_suppress.json`) and skips sending any RTP whose **SSRC** is listed.
+Empty/absent file → no effect. Pairs with VoxyWatch's portal/sniffer suppression for
+defense-in-depth. See the portal's `docs/DESIGN_PCI_PAUSE_RESUME.md`.
+
+---
+
 ## Build
 
 Requires CGO + libpcap (captures traffic in both directions):
