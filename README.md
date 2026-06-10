@@ -60,6 +60,8 @@ sudo ./voxywatch-probe -hs YOUR_VOXYWATCH:9060        # auto-detected interface
 
 ## 🔒 PCI-DSS suppression (at the source)
 
+> 🚧 **Coming in the next release** — OFF by default; ships when the PCI feature train is published.
+
 For PCI-DSS compliance, the Probe can **drop the RTP of a payment window at the source** — the
 sensitive audio (card / CVV) **never leaves the secure environment**, never travels the network,
 never reaches VoxyWatch. This is the strictest option (smallest PCI scope).
