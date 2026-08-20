@@ -6,7 +6,7 @@
 set -euo pipefail
 
 REPO="VoxyWatch/voxywatch-probe"
-SERVER=""; SITE_ID="2001"; IFACE="auto"; MODE="siprtp"; TRANSPORT="udp"
+SERVER=""; SITE_ID="2001"; IFACE="auto"; MODE="siprtp"; TRANSPORT="udp"; PROFILE="auto"; MEDIA_POLICY="learned"; TRUSTED_CIDRS=""
 BIN=/usr/local/bin/voxywatch-probe
 UNIT=/etc/systemd/system/voxywatch-probe.service
 
@@ -22,6 +22,9 @@ while [ $# -gt 0 ]; do
     --iface)  IFACE="$2"; shift 2;;
     --mode)   MODE="$2"; shift 2;;
     --transport) TRANSPORT="$2"; shift 2;;
+    --profile) PROFILE="$2"; shift 2;;
+    --media-policy) MEDIA_POLICY="$2"; shift 2;;
+    --trusted-cidrs) TRUSTED_CIDRS="$2"; shift 2;;
     *) die "unknown argument: $1";;
   esac
 done
@@ -29,6 +32,15 @@ done
 [ "$(id -u)" = "0" ] || die "run as root (sudo)."
 [ -n "$SERVER" ] || die "missing --server VOXYWATCH_HOST:9060 (where to send the capture)."
 echo "$SERVER" | grep -q ':' || SERVER="$SERVER:9060"
+echo "$SERVER" | grep -Eq '^[A-Za-z0-9._:\[\]-]+$' || die "invalid --server"
+case "$MODE" in sip|siprtcp|siprtp|all) ;; *) die "invalid --mode";; esac
+case "$TRANSPORT" in udp|tcp) ;; *) die "invalid --transport";; esac
+case "$PROFILE" in auto|span|rspan|erspan|aws-vxlan) ;; *) die "invalid --profile";; esac
+case "$MEDIA_POLICY" in learned|heuristic) ;; *) die "invalid --media-policy";; esac
+echo "$IFACE" | grep -Eq '^[A-Za-z0-9_.:-]{1,32}$' || die "invalid --iface"
+echo "$SITE_ID" | grep -Eq '^[0-9]{1,10}$' || die "invalid --site"
+if [ -n "$TRUSTED_CIDRS" ]; then echo "$TRUSTED_CIDRS" | grep -Eq '^[0-9A-Fa-f:.,/]+$' || die "invalid --trusted-cidrs"; fi
+TRUSTED_OPT=""; [ -n "$TRUSTED_CIDRS" ] && TRUSTED_OPT="-trusted-cidrs $TRUSTED_CIDRS"
 
 # ── Architecture ──────────────────────────────────────────────────────────────
 case "$(uname -m)" in
@@ -49,9 +61,16 @@ fi
 
 # ── Download binary from the latest release ──────────────────────────────────────
 URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+TMPDIR_PROBE="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_PROBE"' EXIT
 c_y "downloading ${ASSET}…"
-curl -fsSL "$URL" -o "$BIN" || die "could not download $URL"
-chmod +x "$BIN"
+curl -fsSL "$URL" -o "$TMPDIR_PROBE/$ASSET" || die "could not download $URL"
+curl -fsSL "$URL.sha256" -o "$TMPDIR_PROBE/$ASSET.sha256" || die "could not download release checksum"
+EXPECTED="$(awk 'NR==1 && $1 ~ /^[0-9a-f]{64}$/ {print $1}' "$TMPDIR_PROBE/$ASSET.sha256")"
+[ -n "$EXPECTED" ] || die "invalid checksum file"
+ACTUAL="$(sha256sum "$TMPDIR_PROBE/$ASSET" | awk '{print $1}')"
+[ "$ACTUAL" = "$EXPECTED" ] || die "SHA-256 mismatch; refusing to install"
+install -o root -g root -m 0755 "$TMPDIR_PROBE/$ASSET" "$BIN"
 c_g "✓ binary at $BIN"
 
 # ── systemd service (ephemeral user + CAP_NET_RAW, no permanent root) ─────
@@ -62,7 +81,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$BIN -hs $SERVER -i $IFACE -m $MODE -t $TRANSPORT -capture-id $SITE_ID
+ExecStart=$BIN -hs $SERVER -i $IFACE -m $MODE -t $TRANSPORT -profile $PROFILE -media-policy $MEDIA_POLICY $TRUSTED_OPT -capture-id $SITE_ID
 DynamicUser=yes
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN

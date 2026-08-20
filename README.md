@@ -1,10 +1,14 @@
 # VoxyWatch Probe 🛰️
 
-Capture agent for **VoxyWatch**. It installs on your PBX/SBC server and
+Capture agent for **VoxyWatch**. It can run on the VoxyWatch host with a dedicated
+SPAN/RSPAN NIC, receive ERSPAN or AWS VXLAN, or run beside a PBX/SBC. It
 **sniffs the network** (passively, without touching the PBX configuration) to send
 VoxyWatch: **SIP + RTP (audio) + RTCP + quality metrics**, via HEPv3.
 
 - A single binary (Go) + `libpcap`. Passive capture (like `tcpdump`).
+- Decapsulates VLAN/QinQ, VXLAN and ERSPAN II/III and uses the inner call tuple.
+- Bounded asynchronous HEP queue, mirror deduplication and kernel/interface drop counters.
+- RTP is SDP-learned by default; broad heuristic capture requires an explicit trusted CIDR.
 - **It does not modify the SBC.** Works with any PBX because it captures from the network.
 - Reconstructs the call **audio** (which the PBX's native HEP does not provide).
 - Linux **x64 / arm64** (on-premise, AWS Graviton, GCP).
@@ -21,7 +25,9 @@ curl -fsSL https://raw.githubusercontent.com/VoxyWatch/voxywatch-probe/master/in
 
 Replace `YOUR_VOXYWATCH` with the IP/host of your VoxyWatch. The installer detects the
 architecture, downloads the binary, grants it capture permissions, **auto-detects the
-interface**, and leaves it running as a **service** that starts on boot.
+interface**, and leaves it running as a **service** that starts on boot. For the
+integrated same-host mirror workflow, prefer VoxyWatch **Settings -> Capture Sources**;
+that copy is bundled inside the signed VoxyWatch release and remains OFF by default.
 
 Verify:
 ```bash
@@ -57,10 +63,17 @@ sudo ./voxywatch-probe -hs YOUR_VOXYWATCH:9060        # auto-detected interface
 | `-m` | `siprtp` | `sip` · `siprtcp` · `siprtp` · `all` |
 | `-t` | `udp` | HEP transport: `udp` / `tcp` |
 | `-capture-id` | `2001` | Agent/site ID |
+| `-profile` | `auto` | `span` · `rspan` · `erspan` · `aws-vxlan` · `auto` |
+| `-media-policy` | `learned` | `learned` (SDP) · `heuristic` (advanced) |
+| `-trusted-cidrs` | empty | SBC/voice CIDRs; mandatory for safe broad capture |
+| `-queue-size` | `8192` | Bounded non-blocking HEP queue |
+| `-dedupe-ms` | `1500` | Mirror duplicate suppression window |
+| `-read-pcap` | empty | Offline PCAP replay for validation |
+
+For switch/cloud topology, security, sizing and vendor terminology, see the
+VoxyWatch product guide [`docs/PASSIVE_MIRROR_CAPTURE.md`](https://github.com/VoxyWatch/publish/blob/main/docs/PASSIVE_MIRROR_CAPTURE.md).
 
 ## 🔒 PCI-DSS suppression (at the source)
-
-> 🚧 **Coming in the next release** — OFF by default; ships when the PCI feature train is published.
 
 For PCI-DSS compliance, the Probe can **drop the RTP of a payment window at the source** — the
 sensitive audio (card / CVV) **never leaves the secure environment**, never travels the network,

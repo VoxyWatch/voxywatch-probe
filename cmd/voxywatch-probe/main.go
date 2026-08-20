@@ -3,9 +3,12 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -14,10 +17,31 @@ import (
 	"github.com/voxywatch/voxywatch-probe/internal/sender"
 )
 
-var version = "0.1.0-mvp"
+var version = "0.2.0-beta"
+
+func writeStatus(path string, value any) {
+	if path == "" {
+		return
+	}
+	b, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	if err = os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err = os.WriteFile(tmp, append(b, '\n'), 0640); err == nil {
+		_ = os.Rename(tmp, path)
+	}
+}
 
 func main() {
 	log.SetFlags(log.LstdFlags)
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Printf("voxywatch-probe %s\n", version)
+		return
+	}
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -27,7 +51,8 @@ func main() {
 		log.Printf("[auto] interfaz detectada automáticamente: %s", cfg.Iface)
 	}
 
-	snd := sender.New(cfg.Transport, cfg.HEPServer)
+	snd := sender.New(cfg.Transport, cfg.HEPServer, cfg.QueueSize)
+	defer snd.Close()
 	cap, err := capture.New(cfg, snd)
 	if err != nil {
 		log.Fatalf("capture: %v", err)
@@ -41,9 +66,11 @@ func main() {
 		for range t.C {
 			sip, rtp, rtcp, other := cap.Counts()
 			self, peer := cap.RtpDirs()
-			sent, errs := snd.Stats()
-			log.Printf("[stats] sip=%d rtp=%d (saliente=%d entrante=%d) rtcp=%d other=%d | enviados=%d errores=%d",
-				sip, rtp, self, peer, rtcp, other, sent, errs)
+			sent, errs, senderDrop := snd.Stats()
+			dup, untrusted, queueDrop, pci, recv, kernelDrop, ifaceDrop := cap.Health()
+			log.Printf("[stats] sip=%d rtp=%d rtcp=%d other=%d sent=%d errors=%d drops(queue=%d kernel=%d iface=%d) dup=%d untrusted=%d",
+				sip, rtp, rtcp, other, sent, errs, queueDrop+senderDrop, kernelDrop, ifaceDrop, dup, untrusted)
+			writeStatus(cfg.StatusFile, map[string]any{"version": version, "updated_at": time.Now().UTC().Format(time.RFC3339), "interface": cfg.Iface, "profile": cfg.Profile, "mode": cfg.Mode, "media_policy": cfg.MediaPolicy, "capture_id": cfg.CaptureID, "packets_received": recv, "sip": sip, "rtp": rtp, "rtcp": rtcp, "other": other, "rtp_self": self, "rtp_peer": peer, "sent": sent, "send_errors": errs, "queue_dropped": queueDrop + senderDrop, "kernel_dropped": kernelDrop, "interface_dropped": ifaceDrop, "duplicates": dup, "untrusted": untrusted, "pci_suppressed": pci})
 		}
 	}()
 

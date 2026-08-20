@@ -4,6 +4,8 @@
 package capture
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -11,10 +13,11 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 
 	"github.com/voxywatch/voxywatch-probe/internal/config"
@@ -28,8 +31,11 @@ type Capturer struct {
 	snd    *sender.Sender
 	sipSet map[uint16]bool
 	counts struct {
-		sip, rtp, rtcp, other, rtpSelf, rtpPeer, pciSuppressed uint64
+		sip, rtp, rtcp, other, rtpSelf, rtpPeer, pciSuppressed, duplicate, untrusted, queueDropped uint64
 	}
+	mu    sync.RWMutex
+	media map[string]time.Time
+	dedup map[[32]byte]time.Time
 	// Modo PCI (F1c): SSRC cuyo RTP NO se envía durante una ventana de pago (corte en ORIGEN).
 	// Se relee de pciPath (JSON con calls[].flows.ssrc_*) en caliente. Vacío → sin efecto.
 	pciSSRCs     map[uint32]bool
@@ -58,8 +64,18 @@ func New(cfg *config.Config, snd *sender.Sender) (*Capturer, error) {
 	// intermitentemente (el buffer no se vacía a tiempo y ReadPacketData se atasca). Además
 	// subimos el buffer a 8 MB para absorber ráfagas. Fallback a OpenLive si algo falla.
 	var h *pcap.Handle
-	ih, ierr := pcap.NewInactiveHandle(iface)
-	if ierr == nil {
+	var ierr error
+	if cfg.PCAPFile != "" {
+		h, ierr = pcap.OpenOffline(cfg.PCAPFile)
+		if ierr != nil {
+			return nil, fmt.Errorf("pcap.OpenOffline(%s): %w", cfg.PCAPFile, ierr)
+		}
+	}
+	var ih *pcap.InactiveHandle
+	if h == nil {
+		ih, ierr = pcap.NewInactiveHandle(iface)
+	}
+	if h == nil && ierr == nil {
 		_ = ih.SetSnapLen(int(cfg.Snaplen))
 		_ = ih.SetPromisc(true)
 		_ = ih.SetTimeout(100 * time.Millisecond)
@@ -85,7 +101,7 @@ func New(cfg *config.Config, snd *sender.Sender) (*Capturer, error) {
 	if pciPath == "" {
 		pciPath = "/etc/voxywatch-probe/pci_suppress.json"
 	}
-	c := &Capturer{cfg: cfg, handle: h, snd: snd, sipSet: map[uint16]bool{},
+	c := &Capturer{cfg: cfg, handle: h, snd: snd, sipSet: map[uint16]bool{}, media: map[string]time.Time{}, dedup: map[[32]byte]time.Time{},
 		pciSSRCs: map[uint32]bool{}, pciPath: pciPath}
 	for _, p := range cfg.SIPPorts {
 		c.sipSet[p] = true
@@ -164,48 +180,55 @@ func (c *Capturer) reloadPCI() {
 }
 
 func (c *Capturer) handle_(pkt gopacket.Packet) {
-	netLayer := pkt.NetworkLayer()
-	if netLayer == nil {
+	v, err := decodeView(pkt)
+	if err != nil {
 		return
 	}
-	var srcIP, dstIP net.IP
-	var ipProto byte
-	switch ip := netLayer.(type) {
-	case *layers.IPv4:
-		srcIP, dstIP, ipProto = ip.SrcIP, ip.DstIP, byte(ip.Protocol)
-	case *layers.IPv6:
-		srcIP, dstIP, ipProto = ip.SrcIP, ip.DstIP, byte(ip.NextHeader)
-	default:
-		return
-	}
-
-	// MVP: solo UDP (SIP/RTP/RTCP sobre UDP). SIP-TCP/TLS en fase posterior.
-	udp, ok := pkt.TransportLayer().(*layers.UDP)
-	if !ok {
-		return
-	}
-	payload := udp.Payload
+	srcIP, dstIP, ipProto := v.srcIP, v.dstIP, v.ipProto
+	payload := v.payload
 	if len(payload) == 0 {
 		return
 	}
-	srcPort, dstPort := uint16(udp.SrcPort), uint16(udp.DstPort)
+	srcPort, dstPort := v.srcPort, v.dstPort
+	if !c.trusted(srcIP, dstIP) {
+		c.mu.Lock()
+		c.counts.untrusted++
+		c.mu.Unlock()
+		return
+	}
 
 	proto, want := c.classify(srcPort, dstPort, payload)
 	if !want {
 		return
 	}
+	if proto == hep.ProtoSIP {
+		c.learnSDP(payload, srcIP, dstIP)
+	}
+	if c.isDuplicate(srcIP, dstIP, srcPort, dstPort, payload) {
+		c.mu.Lock()
+		c.counts.duplicate++
+		c.mu.Unlock()
+		return
+	}
 	if proto == hep.ProtoRTP {
+		if c.cfg.MediaPolicy == "learned" && !c.isLearnedMedia(srcIP, dstIP, srcPort, dstPort) {
+			return
+		}
+		c.mu.Lock()
 		if isPrivate(srcIP) {
 			c.counts.rtpSelf++
 		} else {
 			c.counts.rtpPeer++
 		}
+		c.mu.Unlock()
 		// Modo PCI (F1c): no enviar el RTP de un SSRC en ventana de pago → corte en ORIGEN,
 		// el dato sensible no sale del entorno seguro. reloadPCI() está auto-throttled.
 		c.reloadPCI()
 		if len(c.pciSSRCs) > 0 && len(payload) >= 12 {
 			if c.pciSSRCs[binary.BigEndian.Uint32(payload[8:12])] {
+				c.mu.Lock()
 				c.counts.pciSuppressed++
+				c.mu.Unlock()
 				return
 			}
 		}
@@ -221,7 +244,120 @@ func (c *Capturer) handle_(pkt gopacket.Packet) {
 		TsSec: uint32(ts.Unix()), TsUsec: uint32(ts.Nanosecond() / 1000),
 		CaptureID: c.cfg.CaptureID, Payload: payload,
 	})
-	c.snd.Send(out)
+	if !c.snd.Send(out) {
+		c.mu.Lock()
+		c.counts.queueDropped++
+		c.mu.Unlock()
+	}
+}
+
+func (c *Capturer) trusted(src, dst net.IP) bool {
+	if len(c.cfg.TrustedCIDRs) == 0 {
+		return true
+	}
+	for _, n := range c.cfg.TrustedCIDRs {
+		if n.Contains(src) || n.Contains(dst) {
+			return true
+		}
+	}
+	return false
+}
+
+func mediaKey(ip net.IP, port uint16) string {
+	return net.JoinHostPort(ip.String(), strconv.Itoa(int(port)))
+}
+
+func (c *Capturer) learnSDP(payload []byte, src, dst net.IP) {
+	if !bytes.Contains(bytes.ToLower(payload), []byte("content-type: application/sdp")) && !bytes.Contains(payload, []byte("\r\nm=")) {
+		return
+	}
+	var conn net.IP
+	var mediaPort uint16
+	lines := strings.Split(strings.ReplaceAll(string(payload), "\r\n", "\n"), "\n")
+	now := time.Now().Add(2 * time.Hour)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, line := range lines {
+		f := strings.Fields(line)
+		if len(f) >= 3 && f[0] == "c=IN" {
+			conn = net.ParseIP(f[len(f)-1])
+			if conn != nil && mediaPort > 0 {
+				c.media[mediaKey(conn, mediaPort)] = now
+				if mediaPort < 65535 {
+					c.media[mediaKey(conn, mediaPort+1)] = now
+				}
+			}
+		}
+		if len(f) >= 2 && strings.HasPrefix(f[0], "m=") {
+			p, err := strconv.Atoi(f[1])
+			if err != nil || p < 1 || p > 65535 {
+				continue
+			}
+			ip := conn
+			if ip == nil {
+				ip = src
+			}
+			mediaPort = uint16(p)
+			c.media[mediaKey(ip, mediaPort)] = now
+			// RTCP commonly uses the adjacent odd port; explicit a=rtcp is learned below.
+			if p < 65535 {
+				c.media[mediaKey(ip, uint16(p+1))] = now
+			}
+		}
+		if len(f) >= 2 && strings.HasPrefix(f[0], "a=rtcp:") {
+			p, err := strconv.Atoi(strings.TrimPrefix(f[0], "a=rtcp:"))
+			if err == nil && p > 0 && p <= 65535 {
+				ip := conn
+				if ip == nil {
+					ip = dst
+				}
+				c.media[mediaKey(ip, uint16(p))] = now
+			}
+		}
+	}
+}
+
+func (c *Capturer) isLearnedMedia(src, dst net.IP, sp, dp uint16) bool {
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, until := range c.media {
+		if now.After(until) {
+			delete(c.media, k)
+		}
+	}
+	return now.Before(c.media[mediaKey(src, sp)]) || now.Before(c.media[mediaKey(dst, dp)])
+}
+
+func (c *Capturer) isDuplicate(src, dst net.IP, sp, dp uint16, payload []byte) bool {
+	if c.cfg.DedupeWindow == 0 {
+		return false
+	}
+	h := sha256.New()
+	h.Write(src)
+	h.Write(dst)
+	var ports [4]byte
+	binary.BigEndian.PutUint16(ports[0:2], sp)
+	binary.BigEndian.PutUint16(ports[2:4], dp)
+	h.Write(ports[:])
+	h.Write(payload)
+	var key [32]byte
+	copy(key[:], h.Sum(nil))
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if until, ok := c.dedup[key]; ok && now.Before(until) {
+		return true
+	}
+	c.dedup[key] = now.Add(c.cfg.DedupeWindow)
+	if len(c.dedup) > 65536 {
+		for k, until := range c.dedup {
+			if now.After(until) {
+				delete(c.dedup, k)
+			}
+		}
+	}
+	return false
 }
 
 // classify decide el tipo de payload y si debe enviarse según el modo.
@@ -229,7 +365,9 @@ func (c *Capturer) handle_(pkt gopacket.Packet) {
 func (c *Capturer) classify(srcPort, dstPort uint16, p []byte) (proto byte, want bool) {
 	// SIP: por puerto conocido o por firma textual.
 	if c.sipSet[srcPort] || c.sipSet[dstPort] || isSIP(p) {
+		c.mu.Lock()
 		c.counts.sip++
+		c.mu.Unlock()
 		return hep.ProtoSIP, true
 	}
 	if !c.cfg.WantRTP && !c.cfg.WantRTCP {
@@ -237,26 +375,34 @@ func (c *Capturer) classify(srcPort, dstPort uint16, p []byte) (proto byte, want
 	}
 	// RTP/RTCP: versión 2 en los 2 bits altos del primer byte.
 	if len(p) < 12 || (p[0]>>6) != 2 {
+		c.mu.Lock()
 		c.counts.other++
+		c.mu.Unlock()
 		return 0, false
 	}
 	// Descartar puertos de servicios bien conocidos (DNS 53, STUN 3478, etc.) y
 	// puertos de señalización; el media RTP usa puertos efímeros altos.
 	if isWellKnown(srcPort) || isWellKnown(dstPort) || srcPort < 1024 || dstPort < 1024 {
+		c.mu.Lock()
 		c.counts.other++
+		c.mu.Unlock()
 		return 0, false
 	}
 	pt := p[1] & 0x7f
 	// RFC 5761: payload types 64-95 reservados → RTCP (SR=200..XR=207 → &0x7f = 72..79).
 	if pt >= 64 && pt <= 95 {
 		if c.cfg.WantRTCP {
+			c.mu.Lock()
 			c.counts.rtcp++
+			c.mu.Unlock()
 			return hep.ProtoRTCP, true
 		}
 		return 0, false
 	}
 	if c.cfg.WantRTP {
+		c.mu.Lock()
 		c.counts.rtp++
+		c.mu.Unlock()
 		return hep.ProtoRTP, true
 	}
 	return 0, false
@@ -293,10 +439,24 @@ var sipMethods = []string{
 
 // Counts devuelve los contadores acumulados (para logging periódico).
 func (c *Capturer) Counts() (sip, rtp, rtcp, other uint64) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.counts.sip, c.counts.rtp, c.counts.rtcp, c.counts.other
 }
 
 // RtpDirs: RTP con IP origen privada (saliente del host) vs pública (entrante).
 func (c *Capturer) RtpDirs() (self, peer uint64) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.counts.rtpSelf, c.counts.rtpPeer
+}
+
+func (c *Capturer) Health() (duplicate, untrusted, queueDropped, pciSuppressed uint64, kernelRecv, kernelDrop, ifaceDrop int) {
+	c.mu.RLock()
+	duplicate, untrusted, queueDropped, pciSuppressed = c.counts.duplicate, c.counts.untrusted, c.counts.queueDropped, c.counts.pciSuppressed
+	c.mu.RUnlock()
+	if st, err := c.handle.Stats(); err == nil {
+		kernelRecv, kernelDrop, ifaceDrop = st.PacketsReceived, st.PacketsDropped, st.PacketsIfDropped
+	}
+	return
 }

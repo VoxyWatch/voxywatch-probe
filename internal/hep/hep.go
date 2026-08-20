@@ -11,11 +11,11 @@ import (
 
 // Protocol type (chunk 0x000b) — qué transporta el payload.
 const (
-	ProtoSIP   byte = 1
-	ProtoRTP   byte = 4
-	ProtoRTCP  byte = 5
+	ProtoSIP    byte = 1
+	ProtoRTP    byte = 4
+	ProtoRTCP   byte = 5
 	ProtoRTCPXR byte = 8
-	ProtoLOG   byte = 100 // JSON de telemetría (métricas/host/eventos)
+	ProtoLOG    byte = 100 // JSON de telemetría (métricas/host/eventos)
 )
 
 // IPFamily / IPProtocol
@@ -30,8 +30,8 @@ type Packet struct {
 	DstIP     net.IP
 	SrcPort   uint16
 	DstPort   uint16
-	IPProto   byte   // 6=TCP, 17=UDP
-	Proto     byte   // ProtoSIP / ProtoRTP / ...
+	IPProto   byte // 6=TCP, 17=UDP
+	Proto     byte // ProtoSIP / ProtoRTP / ...
 	TsSec     uint32
 	TsUsec    uint32
 	CaptureID uint32
@@ -47,9 +47,19 @@ func chunk(buf *bytes.Buffer, vendor, typeID uint16, payload []byte) {
 	buf.Write(payload)
 }
 
-func chunkByte(buf *bytes.Buffer, vendor, typeID uint16, v byte)   { chunk(buf, vendor, typeID, []byte{v}) }
-func chunkU16(buf *bytes.Buffer, vendor, typeID uint16, v uint16)  { b := make([]byte, 2); binary.BigEndian.PutUint16(b, v); chunk(buf, vendor, typeID, b) }
-func chunkU32(buf *bytes.Buffer, vendor, typeID uint16, v uint32)  { b := make([]byte, 4); binary.BigEndian.PutUint32(b, v); chunk(buf, vendor, typeID, b) }
+func chunkByte(buf *bytes.Buffer, vendor, typeID uint16, v byte) {
+	chunk(buf, vendor, typeID, []byte{v})
+}
+func chunkU16(buf *bytes.Buffer, vendor, typeID uint16, v uint16) {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, v)
+	chunk(buf, vendor, typeID, b)
+}
+func chunkU32(buf *bytes.Buffer, vendor, typeID uint16, v uint32) {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, v)
+	chunk(buf, vendor, typeID, b)
+}
 
 // Encode arma el datagrama HEPv3 completo listo para enviar por UDP/TCP.
 func Encode(p *Packet) []byte {
@@ -74,9 +84,9 @@ func Encode(p *Packet) []byte {
 	chunkU16(&chunks, 0, 0x0008, p.DstPort)
 	chunkU32(&chunks, 0, 0x0009, p.TsSec)
 	chunkU32(&chunks, 0, 0x000a, p.TsUsec)
-	chunkByte(&chunks, 0, 0x000b, p.Proto)      // protocol type
-	chunkU32(&chunks, 0, 0x000c, p.CaptureID)   // capture agent id
-	chunk(&chunks, 0, 0x000f, p.Payload)        // payload
+	chunkByte(&chunks, 0, 0x000b, p.Proto)    // protocol type
+	chunkU32(&chunks, 0, 0x000c, p.CaptureID) // capture agent id
+	chunk(&chunks, 0, 0x000f, p.Payload)      // payload
 
 	var out bytes.Buffer
 	out.WriteString("HEP3")
