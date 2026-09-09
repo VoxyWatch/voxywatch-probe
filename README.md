@@ -1,21 +1,27 @@
 # VoxyWatch Probe 🛰️
 
+**Beta** · Linux x86_64 / ARM64 · [VoxyWatch](https://voxywatch.com)
+
 Capture agent for **VoxyWatch**. It can run on the VoxyWatch host with a dedicated
 SPAN/RSPAN NIC, receive ERSPAN or AWS VXLAN, or run beside a PBX/SBC. It
 **sniffs the network** (passively, without touching the PBX configuration) to send
-VoxyWatch: **SIP + RTP (audio) + RTCP + quality metrics**, via HEPv3.
+VoxyWatch: SIP, RTP and RTCP observations via HEPv3. VoxyWatch correlates and,
+when eligible, reconstructs media; the Probe itself does not reconstruct audio.
 
 - A single binary (Go) + `libpcap`. Passive capture (like `tcpdump`).
 - Decapsulates VLAN/QinQ, VXLAN and ERSPAN II/III and uses the inner call tuple.
 - Bounded asynchronous HEP queue, mirror deduplication and kernel/interface drop counters.
-- RTP is SDP-learned by default; broad heuristic capture requires an explicit trusted CIDR.
-- **It does not modify the SBC.** Works with any PBX because it captures from the network.
-- Reconstructs the call **audio** (which the PBX's native HEP does not provide).
+- RTP is SDP-learned by default. Use explicit trusted CIDRs as a recommended
+  guard for broad heuristic capture; an empty list means all networks.
+- **It does not modify the SBC.** Compatibility depends on the available mirror
+  and traffic visibility; it is not a claim that every PBX has been tested.
+- SRTP remains encrypted and is not decoded. HEP transport supports UDP or TCP,
+  not TLS; use a private, protected network path.
 - Linux **x64 / arm64** (on-premise, AWS Graviton, GCP).
 
 ---
 
-## Quick install (for dummies)
+## Quick installation
 
 On the server where your PBX runs (Asterisk, FreeSWITCH, etc.):
 
@@ -26,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/VoxyWatch/voxywatch-probe/master/in
 Replace `YOUR_VOXYWATCH` with the IP/host of your VoxyWatch. The installer detects the
 architecture, downloads the binary, grants it capture permissions, **auto-detects the
 interface**, and leaves it running as a **service** that starts on boot. For the
-integrated same-host mirror workflow, prefer VoxyWatch **Settings -> Capture Sources**;
+integrated same-host mirror workflow, prefer VoxyWatch **Settings → Capture → Sniffer**;
 that copy is bundled inside the signed VoxyWatch release and remains OFF by default.
 
 Verify:
@@ -34,7 +40,8 @@ Verify:
 systemctl status voxywatch-probe
 journalctl -u voxywatch-probe -f     # [stats] sip=.. rtp=.. sent=..
 ```
-Make a call and check it in the VoxyWatch portal — it must include **audio**.
+Make a call and check it in the VoxyWatch portal. Media availability depends on
+what the mirror can observe and correlate.
 
 ---
 
@@ -43,7 +50,8 @@ Make a call and check it in the VoxyWatch portal — it must include **audio**.
 Start there: a **compatibility matrix** and a **per-model guide** (Asterisk,
 FreeSWITCH, Kamailio, OpenSIPS, Oracle/Acme, Ribbon, AudioCodes, Cisco CUBE, Avaya…).
 
-- **Open source** (Asterisk, FreeSWITCH…): the Probe captures everything, including audio.
+- **Open source** (Asterisk, FreeSWITCH…): captures visible eligible SIP/media;
+  encryption, interface selection and capture loss can limit evidence.
 - **Closed/proprietary**: the vendor's native HEP (whatever it sends) or SIPREC/SPAN.
 
 Asterisk guide ready: **[docs/sbc/asterisk.md](docs/sbc/asterisk.md)**.
@@ -65,24 +73,29 @@ sudo ./voxywatch-probe -hs YOUR_VOXYWATCH:9060        # auto-detected interface
 | `-capture-id` | `2001` | Agent/site ID |
 | `-profile` | `auto` | `span` · `rspan` · `erspan` · `aws-vxlan` · `auto` |
 | `-media-policy` | `learned` | `learned` (SDP) · `heuristic` (advanced) |
-| `-trusted-cidrs` | empty | SBC/voice CIDRs; mandatory for safe broad capture |
+| `-trusted-cidrs` | empty | Recommended voice CIDRs; empty does not restrict capture |
 | `-queue-size` | `8192` | Bounded non-blocking HEP queue |
 | `-dedupe-ms` | `1500` | Mirror duplicate suppression window |
 | `-read-pcap` | empty | Offline PCAP replay for validation |
 
+The capture service requires `CAP_NET_RAW` and `CAP_NET_ADMIN`. Runtime status
+may not be writable in every deployment; use the service journal as the primary
+operational evidence and treat the status file as supplementary.
+
 For switch/cloud topology, security, sizing and vendor terminology, see the
-VoxyWatch product guide [`docs/PASSIVE_MIRROR_CAPTURE.md`](https://github.com/VoxyWatch/publish/blob/main/docs/PASSIVE_MIRROR_CAPTURE.md).
+VoxyWatch product guide [`PASSIVE_MIRROR_CAPTURE.md`](https://github.com/VoxyWatch/publish/blob/main/PASSIVE_MIRROR_CAPTURE.md).
 
 ## 🔒 PCI-DSS suppression (at the source)
 
-For PCI-DSS compliance, the Probe can **drop the RTP of a payment window at the source** — the
-sensitive audio (card / CVV) **never leaves the secure environment**, never travels the network,
-never reaches VoxyWatch. This is the strictest option (smallest PCI scope).
+The Probe can suppress selected RTP streams at the capture source when an authorized
+payment-window signal is supplied. This is a privacy control, not a PCI-DSS certification.
+Correct triggering and stream identification must be tested; it cannot retract data
+already sent or guarantee suppression of traffic captured through another path.
 
 It hot-reloads `pci_suppress.json` (path via `VW_PROBE_PCI_FILE`, default
 `/etc/voxywatch-probe/pci_suppress.json`) and skips sending any RTP whose **SSRC** is listed.
-Empty/absent file → no effect. Pairs with VoxyWatch's portal/sniffer suppression for
-defense-in-depth. See the portal's `docs/DESIGN_PCI_PAUSE_RESUME.md`.
+Empty/absent file → no effect. Coordinate it with the VoxyWatch recording policy and
+validate an authorized synthetic payment-window test before relying on suppression.
 
 ---
 
@@ -94,7 +107,7 @@ Requires CGO + libpcap (captures traffic in both directions):
 docker run --rm -v "$PWD":/src -w /src golang:1.23-bookworm \
   sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -o voxywatch-probe-linux-amd64 ./cmd/voxywatch-probe"
 
-# arm64 (native build in an emulated arm64 container — needs binfmt:
+# arm64 (emulated ARM container, NOT native ARM validation — needs binfmt:
 #   docker run --privileged --rm tonistiigi/binfmt --install arm64 ):
 docker run --rm --platform linux/arm64 -v "$PWD":/src -w /src golang:1.23-bookworm \
   sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags='-s -w' -o voxywatch-probe-linux-arm64 ./cmd/voxywatch-probe"

@@ -1,18 +1,20 @@
 # SBC / PBX compatibility with VoxyWatch
 
-VoxyWatch captures signaling (SIP), media (RTP/RTCP) and quality metrics from
-any PBX or SBC. There are **two ways** to get the data in:
+VoxyWatch analyzes visible signaling and media exported from compatible PBX/SBC
+environments. The following paths depend on source configuration and encryption:
 
 | Path | What it is | When to use it | What you get |
 |------|------------|----------------|--------------|
 | **🛰️ VoxyWatch Probe** | Our **own agent**, installed on the host (or on a box with a traffic mirror) that **sniffs the network** passively. It does not touch the SBC configuration. | Whenever we have access to the SBC host or a **mirror/SPAN port**. | SIP + **RTP (audio)** + RTCP + **quality metrics** (jitter, loss, MOS, RTT, one-way audio, host/network). **The most complete.** |
 | **🔌 Native HEP** | The SBC itself sends to VoxyWatch over the **HEP** protocol (the de-facto open SIP-capture protocol). | SBCs that already speak HEP, or **closed/proprietary** ones where we can't install anything. | Whatever the vendor chooses to send (usually SIP, sometimes RTCP; rarely RTP/audio). |
 
-> **Simple rule:** if we **can** get into the box → **Probe** (full control and audio).
-> If we **can't** (vendor's closed box) → **native HEP**, whatever it sends.
+> Prefer an approved mirror host when direct installation on the voice platform is
+> not allowed. Native HEP only provides what the exporter actually sends.
 
-The **Probe works with any SBC** because it's passive network capture — it doesn't depend on
-the vendor. The "Probe" column below shows where we've already tested and documented it.
+Passive capture does not require a vendor-specific API, but that is not universal
+interoperability certification. The matrix distinguishes tested guides from plans.
+Encrypted media is not decrypted by the Probe. SIPREC is a separate recording path;
+see [its limits](https://github.com/VoxyWatch/publish/blob/main/PLATFORM_AND_CAPTURE_VALIDATION.md#siprec-validation).
 
 ---
 

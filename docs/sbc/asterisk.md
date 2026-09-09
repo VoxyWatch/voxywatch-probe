@@ -1,4 +1,4 @@
-# Asterisk → VoxyWatch (guide for dummies)
+# Asterisk → VoxyWatch
 
 Asterisk is **open source**, so you have **two options**. You can use both at once.
 
@@ -6,7 +6,7 @@ Asterisk is **open source**, so you have **two options**. You can use both at on
 |--|-----------------------------------|----------------------------|
 | Install | An agent on the Asterisk server | Nothing new (ships with Asterisk) |
 | Captures | **SIP + RTP (audio) + RTCP + metrics** | Only **SIP** (and RTCP if you enable a module) |
-| Audio? | **Yes** (reconstructs the call to WAV) | **No** (Asterisk does not send RTP over HEP) |
+| Audio? | **Can provide observed RTP to VoxyWatch** | **No** (Asterisk does not send RTP over HEP) |
 | Touches Asterisk config | **No** (passive capture) | Yes (edit `res_hep.conf`) |
 
 > **To get audio you need the Probe.** `res_hep` alone will never give you the audio.

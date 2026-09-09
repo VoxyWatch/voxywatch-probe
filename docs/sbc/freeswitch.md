@@ -1,4 +1,4 @@
-# FreeSWITCH → VoxyWatch (guide for dummies)
+# FreeSWITCH → VoxyWatch
 
 FreeSWITCH is **open source**, so you have **two options**. You can use both at once.
 
@@ -6,7 +6,7 @@ FreeSWITCH is **open source**, so you have **two options**. You can use both at 
 |--|-----------------------------------|--------------------------------|
 | Install | An agent on the FreeSWITCH server | Nothing new (built into mod_sofia) |
 | Captures | **SIP + RTP (audio) + RTCP + metrics** | Only **SIP** (and RTCP if you enable it) |
-| Audio? | **Yes** (reconstructs the call to WAV) | **No** (FreeSWITCH does not send RTP over HEP) |
+| Audio? | **Can provide observed RTP to VoxyWatch** | **No** (FreeSWITCH does not send RTP over HEP) |
 | Touches FreeSWITCH config | **No** (passive capture) | Yes (turn on `capture-server` in the Sofia profile) |
 
 > **To get audio you need the Probe.** Sofia's HEP capture alone will never give you the audio.
@@ -24,7 +24,8 @@ traffic. It does not modify FreeSWITCH.
 
 ### Requirements
 - Linux (Debian/Ubuntu/RHEL…). Needs `libpcap` (usually ships with `tcpdump`).
-- Root access **for the install only** — afterwards the service runs with limited privileges (`CAP_NET_RAW`, no root).
+- Root access **for installation only**; the service uses a dynamic user with
+  `CAP_NET_RAW` and `CAP_NET_ADMIN`, not unrestricted root.
 
 ### A.1 — FreeSWITCH on bare metal (or a VM)
 
