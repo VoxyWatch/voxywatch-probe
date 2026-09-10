@@ -16,9 +16,10 @@ type packetView struct {
 	payload          []byte
 }
 
-// decodeView deliberately selects the innermost transport tuple. gopacket
-// already unwraps Ethernet/VLAN/QinQ/VXLAN; ERSPAN needs its small GRE shim
-// removed before decoding the mirrored Ethernet frame.
+// decodeView selects the innermost UDP or TCP tuple exposed by supported decoders.
+// gopacket unwraps Ethernet, VLAN/QinQ, and VXLAN; ERSPAN requires removing its
+// GRE shim first. This is packet-local decoding: it does not reassemble TCP
+// streams or IP fragments, so fragmented traffic may be unavailable to callers.
 func decodeView(pkt gopacket.Packet) (packetView, error) {
 	return decodeLayers(pkt, 0)
 }
@@ -39,7 +40,7 @@ func decodeLayers(pkt gopacket.Packet, depth int) (packetView, error) {
 		off := 8
 		if proto == 0x22eb {
 			off = 12
-			// ERSPAN III O-bit announces the 8-byte platform-specific subheader.
+			// ERSPAN III's O bit adds an 8-byte platform-specific subheader.
 			if len(gre.Payload) >= 12 && (gre.Payload[11]&0x01) != 0 {
 				off += 8
 			}
@@ -77,6 +78,8 @@ func decodeLayers(pkt gopacket.Packet, depth int) (packetView, error) {
 	return packetView{}, fmt.Errorf("no inner UDP/TCP")
 }
 
+// erspanFrameForTest builds the minimal ERSPAN payload used by package tests.
+// It is not a general ERSPAN encoder and must not be used for live traffic.
 func erspanFrameForTest(proto uint16, inner []byte) []byte {
 	off := 8
 	if proto == 0x22eb {

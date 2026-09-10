@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""
-gen_raw_traffic.py — Genera tráfico SIP + RTP CRUDO (no HEP) hacia loopback, para
-probar voxywatch-probe: el agente lo captura de la NIC y lo reenvía a VoxyWatch por HEP.
+"""Generate synthetic cleartext UDP SIP and RTP for local probe validation.
 
-Uso: python3 gen_raw_traffic.py [dst_ip] [n_calls]
+The script sends raw packets rather than HEP records. It is intentionally a small
+traffic generator, not a SIP endpoint, media quality tool, protocol fuzzer, or a
+replacement for authorized end-to-end testing. Usage: python3 gen_raw_traffic.py
+[dst_ip] [n_calls].
 """
 import socket, struct, sys, time, math, random
 
 DST = sys.argv[1] if len(sys.argv) > 1 else '127.0.0.1'
 NCALLS = int(sys.argv[2]) if len(sys.argv) > 2 else 2
 SIP_PORT = 5060
-RTP_A, RTP_B = 16000, 16002  # puertos de media (caller/callee)
+RTP_A, RTP_B = 16000, 16002  # Synthetic caller and callee media ports.
 
-def mulaw(sample):  # PCM16 -> G.711 mu-law
+def mulaw(sample):  # Convert one signed PCM16-style sample to G.711 mu-law.
     BIAS = 0x84; CLIP = 32635
     sign = 0x80 if sample < 0 else 0
     if sample < 0: sample = -sample
@@ -25,7 +26,7 @@ def mulaw(sample):  # PCM16 -> G.711 mu-law
     mant = (sample >> (exp + 3)) & 0x0F
     return (~(sign | (exp << 4) | mant)) & 0xFF
 
-def tone_frame(freq, n, t0):  # 160 muestras (20ms @ 8kHz) mu-law
+def tone_frame(freq, n, t0):  # n samples; 160 samples equal 20 ms at 8 kHz.
     out = bytearray()
     for i in range(n):
         s = int(12000 * math.sin(2 * math.pi * freq * (t0 + i) / 8000.0))
@@ -49,7 +50,8 @@ s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 def send_sip(p): s.sendto(p, (DST, SIP_PORT))
 def send_rtp(payload, ssrc, seq, ts, dport):
-    hdr = struct.pack('!BBHII', 0x80, 0x00, seq & 0xFFFF, ts & 0xFFFFFFFF, ssrc)  # V=2,PT=0(PCMU)
+    # Minimal RTP v2 header with payload type 0 (PCMU); no extensions or CSRCs.
+    hdr = struct.pack('!BBHII', 0x80, 0x00, seq & 0xFFFF, ts & 0xFFFFFFFF, ssrc)
     s.sendto(hdr + payload, (DST, dport))
 
 now = int(time.time())
@@ -67,12 +69,12 @@ for i in range(NCALLS):
     send_sip(sip("SIP/2.0 200 OK", frm, to1, cid, "1 INVITE",
                  f"Contact: <sip:{b}@{DST}>\r\nContent-Type: application/sdp\r\n", sdp(DST, RTP_B)))
     send_sip(sip(f"ACK {ruri} SIP/2.0", frm, to1, cid, "1 ACK"))
-    # ~3 s de audio bidireccional (150 frames de 20 ms), tono distinto por sentido
+    # About 3 s per direction: 150 frames × 20 ms, with one tone per direction.
     ssrc_a, ssrc_b = random.getrandbits(32), random.getrandbits(32)
     seq, tsv = random.randint(0, 1000), random.randint(0, 100000)
     for k in range(150):
-        send_rtp(tone_frame(440, 160, tsv), ssrc_a, seq + k, tsv + k * 160, RTP_B)  # caller→callee
-        send_rtp(tone_frame(660, 160, tsv), ssrc_b, seq + k, tsv + k * 160, RTP_A)  # callee→caller
+        send_rtp(tone_frame(440, 160, tsv), ssrc_a, seq + k, tsv + k * 160, RTP_B)  # Caller to callee.
+        send_rtp(tone_frame(660, 160, tsv), ssrc_b, seq + k, tsv + k * 160, RTP_A)  # Callee to caller.
         time.sleep(0.002)
     send_sip(sip(f"BYE {ruri} SIP/2.0", frm, to1, cid, "2 BYE"))
     send_sip(sip("SIP/2.0 200 OK", frm, to1, cid, "2 BYE"))

@@ -1,6 +1,5 @@
-// Package hep construye paquetes HEPv3 (HEP3) — el formato que VoxyWatch (y Homer)
-// ingieren. Portado de tools/send_test_calls.py del portal; layout de chunks idéntico
-// para garantizar compatibilidad con el sniffer.
+// Package hep encodes HEPv3 records for VoxyWatch-compatible receivers.
+// It owns the wire layout used by this probe; callers supply observed packet metadata.
 package hep
 
 import (
@@ -9,29 +8,30 @@ import (
 	"net"
 )
 
-// Protocol type (chunk 0x000b) — qué transporta el payload.
+// HEP protocol-type values for chunk 0x000b identify the payload carried by a record.
 const (
 	ProtoSIP    byte = 1
 	ProtoRTP    byte = 4
 	ProtoRTCP   byte = 5
 	ProtoRTCPXR byte = 8
-	ProtoLOG    byte = 100 // JSON de telemetría (métricas/host/eventos)
+	ProtoLOG    byte = 100 // JSON telemetry such as aggregate metrics or host events.
 )
 
-// IPFamily / IPProtocol
+// HEP IP-family values; IPProto in Packet uses the IANA transport protocol number.
 const (
 	famINET  byte = 2  // AF_INET
 	famINET6 byte = 10 // AF_INET6
 )
 
-// Packet describe un evento a encapsular en HEPv3.
+// Packet is one observed transport payload and the metadata required to encode it.
+// SrcIP and DstIP must belong to the same IP family; invalid inputs encode as nil.
 type Packet struct {
 	SrcIP     net.IP
 	DstIP     net.IP
 	SrcPort   uint16
 	DstPort   uint16
-	IPProto   byte // 6=TCP, 17=UDP
-	Proto     byte // ProtoSIP / ProtoRTP / ...
+	IPProto   byte // IANA protocol number: TCP is 6 and UDP is 17.
+	Proto     byte // HEP payload type, for example ProtoSIP or ProtoRTP.
 	TsSec     uint32
 	TsUsec    uint32
 	CaptureID uint32
@@ -61,9 +61,26 @@ func chunkU32(buf *bytes.Buffer, vendor, typeID uint16, v uint32) {
 	chunk(buf, vendor, typeID, b)
 }
 
-// Encode arma el datagrama HEPv3 completo listo para enviar por UDP/TCP.
+// Encode returns one complete HEPv3 record. The same length-prefixed record is
+// suitable for UDP or for sequential writing to a TCP stream; it adds no TLS,
+// fragmentation handling, or transport retry policy.
 func Encode(p *Packet) []byte {
+	if p == nil || p.SrcIP.To16() == nil || p.DstIP.To16() == nil || p.TsUsec >= 1000000 {
+		return nil
+	}
 	is6 := p.SrcIP.To4() == nil
+	if is6 != (p.DstIP.To4() == nil) {
+		return nil
+	}
+	// The fixed envelope is 99 bytes for IPv4 and 123 for IPv6. Check before
+	// allocating or narrowing either the payload chunk or total length to uint16.
+	overhead := 99
+	if is6 {
+		overhead = 123
+	}
+	if len(p.Payload) > 65535-overhead {
+		return nil
+	}
 	var chunks bytes.Buffer
 
 	if is6 {
@@ -71,22 +88,22 @@ func Encode(p *Packet) []byte {
 	} else {
 		chunkByte(&chunks, 0, 0x0001, famINET)
 	}
-	chunkByte(&chunks, 0, 0x0002, p.IPProto) // IP protocol id (UDP/TCP)
+	chunkByte(&chunks, 0, 0x0002, p.IPProto) // IANA transport protocol number.
 
 	if is6 {
-		chunk(&chunks, 0, 0x0005, p.SrcIP.To16()) // IPv6 src
-		chunk(&chunks, 0, 0x0006, p.DstIP.To16()) // IPv6 dst
+		chunk(&chunks, 0, 0x0005, p.SrcIP.To16()) // IPv6 source address.
+		chunk(&chunks, 0, 0x0006, p.DstIP.To16()) // IPv6 destination address.
 	} else {
-		chunk(&chunks, 0, 0x0003, p.SrcIP.To4()) // IPv4 src
-		chunk(&chunks, 0, 0x0004, p.DstIP.To4()) // IPv4 dst
+		chunk(&chunks, 0, 0x0003, p.SrcIP.To4()) // IPv4 source address.
+		chunk(&chunks, 0, 0x0004, p.DstIP.To4()) // IPv4 destination address.
 	}
 	chunkU16(&chunks, 0, 0x0007, p.SrcPort)
 	chunkU16(&chunks, 0, 0x0008, p.DstPort)
 	chunkU32(&chunks, 0, 0x0009, p.TsSec)
 	chunkU32(&chunks, 0, 0x000a, p.TsUsec)
-	chunkByte(&chunks, 0, 0x000b, p.Proto)    // protocol type
-	chunkU32(&chunks, 0, 0x000c, p.CaptureID) // capture agent id
-	chunk(&chunks, 0, 0x000f, p.Payload)      // payload
+	chunkByte(&chunks, 0, 0x000b, p.Proto)    // HEP payload type.
+	chunkU32(&chunks, 0, 0x000c, p.CaptureID) // Capture-agent identifier.
+	chunk(&chunks, 0, 0x000f, p.Payload)      // Observed transport payload.
 
 	var out bytes.Buffer
 	out.WriteString("HEP3")

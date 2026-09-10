@@ -1,6 +1,7 @@
-// Package capture lee paquetes de la red con libpcap (gopacket/pcap) — captura
-// AMBOS sentidos del tráfico (incl. el saliente del propio host, que afpacket no
-// entrega), clasifica SIP / RTP / RTCP y los entrega encapsulados en HEPv3.
+// Package capture owns packet acquisition and conservative SIP/RTP/RTCP
+// classification. It reads libpcap packets in both observed directions and hands
+// selected packets to the HEP sender. It is not a TCP-stream or IP-fragment
+// reassembler, and capture visibility depends on the chosen interface and mirror.
 package capture
 
 import (
@@ -9,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -25,6 +27,10 @@ import (
 	"github.com/voxywatch/voxywatch-probe/internal/sender"
 )
 
+// Capturer owns one libpcap handle and its in-memory classification state.
+// Media and duplicate indexes have fixed cardinality caps and lazy TTL checks.
+// Ring eviction gives constant maintenance work without per-packet full sweeps.
+// It is not safe for copying.
 type Capturer struct {
 	cfg    *config.Config
 	handle *pcap.Handle
@@ -33,17 +39,50 @@ type Capturer struct {
 	counts struct {
 		sip, rtp, rtcp, other, rtpSelf, rtpPeer, pciSuppressed, duplicate, untrusted, queueDropped uint64
 	}
-	mu    sync.RWMutex
-	media map[string]time.Time
-	dedup map[[32]byte]time.Time
-	// Modo PCI (F1c): SSRC cuyo RTP NO se envía durante una ventana de pago (corte en ORIGEN).
-	// Se relee de pciPath (JSON con calls[].flows.ssrc_*) en caliente. Vacío → sin efecto.
+	mu           sync.RWMutex
+	media        map[string]time.Time
+	dedup        map[[32]byte]time.Time
+	mediaKeys    boundedKeys[string]
+	dedupKeys    boundedKeys[[32]byte]
+	closeOnce    sync.Once
+	stop         chan struct{}
+	handleMu     sync.Mutex
+	handleClosed bool
+	kernelStats  pcap.Stats
+	// PCI suppression excludes RTP for listed SSRCs during a payment window at the
+	// source. The portal-owned JSON is reloaded from pciPath; an empty set has no effect.
 	pciSSRCs     map[uint32]bool
 	pciPath      string
 	pciMtime     int64
 	pciLastCheck int64
+	pciFileInfo  os.FileInfo
 }
 
+const maxTrackedEntries = 65536
+
+// boundedKeys retains at most the cap in both the ring and its timestamp map.
+// Refreshes reuse the existing slot. Expiry is logical on lookup; physical removal
+// is FIFO under churn, so expired state can never accumulate beyond the cap.
+type boundedKeys[K comparable] struct {
+	keys []K
+	next int
+}
+
+func (b *boundedKeys[K]) put(m map[K]time.Time, key K, until time.Time) {
+	if _, exists := m[key]; !exists {
+		if len(b.keys) < maxTrackedEntries {
+			b.keys = append(b.keys, key)
+		} else {
+			delete(m, b.keys[b.next])
+			b.keys[b.next] = key
+			b.next = (b.next + 1) % maxTrackedEntries
+		}
+	}
+	m[key] = until
+}
+
+// isPrivate recognizes only the RFC 1918 IPv4 ranges used for directional counters.
+// It is a reporting heuristic, not an authorization or address-classification policy.
 func isPrivate(ip net.IP) bool {
 	ip4 := ip.To4()
 	if ip4 == nil {
@@ -54,15 +93,17 @@ func isPrivate(ip net.IP) bool {
 		(ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31)
 }
 
+// New opens the live interface or the requested offline PCAP and returns its owner.
+// The caller must Close the returned Capturer. Live capture requires permissions
+// granted by the host (normally CAP_NET_RAW and CAP_NET_ADMIN).
 func New(cfg *config.Config, snd *sender.Sender) (*Capturer, error) {
 	iface := cfg.Iface
 	if iface == "" {
 		iface = "any"
 	}
-	// Handle con IMMEDIATE MODE: entrega cada paquete en cuanto llega, sin esperar a que
-	// se llene el buffer del kernel. Sin esto, en loopback (lo/any) la captura se "congela"
-	// intermitentemente (el buffer no se vacía a tiempo y ReadPacketData se atasca). Además
-	// subimos el buffer a 8 MB para absorber ráfagas. Fallback a OpenLive si algo falla.
+	// Immediate mode returns packets without waiting for the kernel buffer to fill.
+	// The 8 MiB libpcap buffer absorbs bursts; if inactive-handle setup fails, fall
+	// back to OpenLive. Neither setting guarantees loss-free capture under load.
 	var h *pcap.Handle
 	var ierr error
 	if cfg.PCAPFile != "" {
@@ -88,7 +129,7 @@ func New(cfg *config.Config, snd *sender.Sender) (*Capturer, error) {
 		var err error
 		h, err = pcap.OpenLive(iface, int32(cfg.Snaplen), true, 100*time.Millisecond)
 		if err != nil {
-			return nil, fmt.Errorf("pcap.OpenLive(%s): %w (¿permisos root/CAP_NET_RAW?)", iface, err)
+			return nil, fmt.Errorf("pcap.OpenLive(%s): %w (check root/CAP_NET_RAW permissions)", iface, err)
 		}
 	}
 	if cfg.BPF != "" {
@@ -102,34 +143,112 @@ func New(cfg *config.Config, snd *sender.Sender) (*Capturer, error) {
 		pciPath = "/etc/voxywatch-probe/pci_suppress.json"
 	}
 	c := &Capturer{cfg: cfg, handle: h, snd: snd, sipSet: map[uint16]bool{}, media: map[string]time.Time{}, dedup: map[[32]byte]time.Time{},
-		pciSSRCs: map[uint32]bool{}, pciPath: pciPath}
+		pciSSRCs: map[uint32]bool{}, pciPath: pciPath, stop: make(chan struct{})}
 	for _, p := range cfg.SIPPorts {
 		c.sipSet[p] = true
 	}
 	return c, nil
 }
 
+// Close releases the libpcap handle. It may be called during signal handling.
 func (c *Capturer) Close() {
-	if c.handle != nil {
-		c.handle.Close()
-	}
+	c.closeOnce.Do(func() {
+		if c.stop != nil {
+			close(c.stop)
+		}
+		c.handleMu.Lock()
+		defer c.handleMu.Unlock()
+		if c.handle != nil {
+			if st, err := c.handle.Stats(); err == nil {
+				c.kernelStats = *st
+			}
+			c.handle.Close()
+		}
+		c.handleClosed = true
+	})
 }
 
-// Run bloquea leyendo y procesando paquetes hasta error fatal.
+// Run blocks while packets are available and processes each packet once. A closed
+// handle or exhausted offline PCAP ends the packet source without inventing a result.
 func (c *Capturer) Run() error {
+	c.handleMu.Lock()
+	if c.handleClosed {
+		c.handleMu.Unlock()
+		return nil
+	}
 	src := gopacket.NewPacketSource(c.handle, c.handle.LinkType())
 	src.DecodeOptions.Lazy = true
 	src.DecodeOptions.NoCopy = true
-	log.Printf("[capture] libpcap iface=%s link=%s modo=%s → %s/%s sip_ports=%v",
+	log.Printf("[capture] libpcap iface=%s link=%s mode=%s → %s/%s sip_ports=%v",
 		c.cfg.Iface, c.handle.LinkType(), c.cfg.Mode, c.cfg.HEPServer, c.cfg.Transport, c.cfg.SIPPorts)
-	for pkt := range src.Packets() {
+	c.handleMu.Unlock()
+	// NextPacket avoids PacketSource's background buffered goroutine. Shutdown
+	// stops acquisition rather than processing a hidden queue after Close.
+	for {
+		select {
+		case <-c.stop:
+			return nil
+		default:
+		}
+		c.handleMu.Lock()
+		if c.handleClosed {
+			c.handleMu.Unlock()
+			return nil
+		}
+		pkt, err := src.NextPacket()
+		c.handleMu.Unlock()
+		if err == pcap.NextErrorTimeoutExpired {
+			continue
+		}
+		if err == io.EOF || err == pcap.NextErrorNotActivated {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 		c.handle_(pkt)
+	}
+}
+
+// pciSSRC accepts the portal's decimal numbers and legacy hexadecimal strings.
+// Digit-only strings are ambiguous: suppress both valid uint32 interpretations
+// rather than leaking payment audio. A malformed value rejects the entire update
+// so the previous valid suppression set remains active.
+type pciSSRC []uint32
+
+func (s *pciSSRC) UnmarshalJSON(raw []byte) error {
+	*s = nil
+	if bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+	if len(raw) > 0 && raw[0] == '"' {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return err
+		}
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || value == "unknown" || value == "none" {
+			return nil
+		}
+		if v, err := strconv.ParseUint(value, 10, 32); err == nil {
+			*s = append(*s, uint32(v))
+		}
+		if v, err := strconv.ParseUint(strings.TrimPrefix(value, "0x"), 16, 32); err == nil {
+			*s = append(*s, uint32(v))
+		}
+	} else if v, err := strconv.ParseUint(string(raw), 10, 32); err == nil {
+		*s = append(*s, uint32(v))
+	}
+	if len(*s) == 0 {
+		return fmt.Errorf("invalid PCI SSRC")
 	}
 	return nil
 }
 
-// reloadPCI relee pciPath (throttle 1s + mtime) → pciSSRCs. Mismo formato que escribe el portal
-// (calls[].flows.ssrc_caller/ssrc_callee). Ausente/vacío → mapa vacío → sin efecto.
+// reloadPCI refreshes the portal-owned calls[].flows.ssrc_* file at most once per
+// second and only after its mtime changes. A missing file clears suppression; a valid
+// JSON document with no listed SSRCs also clears it. An unreadable or invalid changed
+// file leaves the previously loaded set in place.
 func (c *Capturer) reloadPCI() {
 	now := time.Now().Unix()
 	if now-c.pciLastCheck < 1 {
@@ -138,16 +257,16 @@ func (c *Capturer) reloadPCI() {
 	c.pciLastCheck = now
 	fi, err := os.Stat(c.pciPath)
 	if err != nil {
-		if len(c.pciSSRCs) > 0 {
+		if os.IsNotExist(err) {
 			c.pciSSRCs = map[uint32]bool{}
 			c.pciMtime = 0
+			c.pciFileInfo = nil
 		}
 		return
 	}
-	if fi.ModTime().Unix() == c.pciMtime {
+	if c.pciFileInfo != nil && os.SameFile(fi, c.pciFileInfo) && fi.ModTime().UnixNano() == c.pciMtime && fi.Size() == c.pciFileInfo.Size() {
 		return
 	}
-	c.pciMtime = fi.ModTime().Unix()
 	data, err := os.ReadFile(c.pciPath)
 	if err != nil {
 		return
@@ -155,8 +274,8 @@ func (c *Capturer) reloadPCI() {
 	var doc struct {
 		Calls []struct {
 			Flows struct {
-				SsrcCaller string `json:"ssrc_caller"`
-				SsrcCallee string `json:"ssrc_callee"`
+				SsrcCaller pciSSRC `json:"ssrc_caller"`
+				SsrcCallee pciSSRC `json:"ssrc_callee"`
 			} `json:"flows"`
 		} `json:"calls"`
 	}
@@ -165,18 +284,16 @@ func (c *Capturer) reloadPCI() {
 	}
 	set := map[uint32]bool{}
 	for _, cl := range doc.Calls {
-		for _, s := range []string{cl.Flows.SsrcCaller, cl.Flows.SsrcCallee} {
-			if s == "" || s == "Unknown" || s == "None" {
-				continue
-			}
-			if v, e := strconv.ParseUint(s, 10, 32); e == nil {
-				set[uint32(v)] = true
-			} else if v, e := strconv.ParseUint(s, 16, 32); e == nil {
-				set[uint32(v)] = true
+		for _, values := range []pciSSRC{cl.Flows.SsrcCaller, cl.Flows.SsrcCallee} {
+			for _, v := range values {
+				set[v] = true
 			}
 		}
 	}
 	c.pciSSRCs = set
+	// Commit identity only after successful parsing, so transient failures retry.
+	c.pciMtime = fi.ModTime().UnixNano()
+	c.pciFileInfo = fi
 }
 
 func (c *Capturer) handle_(pkt gopacket.Packet) {
@@ -204,7 +321,7 @@ func (c *Capturer) handle_(pkt gopacket.Packet) {
 	if proto == hep.ProtoSIP {
 		c.learnSDP(payload, srcIP, dstIP)
 	}
-	if c.isDuplicate(srcIP, dstIP, srcPort, dstPort, payload) {
+	if proto != hep.ProtoSIP && c.isDuplicate(srcIP, dstIP, srcPort, dstPort, payload) {
 		c.mu.Lock()
 		c.counts.duplicate++
 		c.mu.Unlock()
@@ -221,8 +338,8 @@ func (c *Capturer) handle_(pkt gopacket.Packet) {
 			c.counts.rtpPeer++
 		}
 		c.mu.Unlock()
-		// Modo PCI (F1c): no enviar el RTP de un SSRC en ventana de pago → corte en ORIGEN,
-		// el dato sensible no sale del entorno seguro. reloadPCI() está auto-throttled.
+		// Do not forward RTP for an SSRC currently under portal-authorized suppression.
+		// This cannot retract earlier delivery or cover a second independent capture path.
 		c.reloadPCI()
 		if len(c.pciSSRCs) > 0 && len(payload) >= 12 {
 			if c.pciSSRCs[binary.BigEndian.Uint32(payload[8:12])] {
@@ -282,9 +399,9 @@ func (c *Capturer) learnSDP(payload []byte, src, dst net.IP) {
 		if len(f) >= 3 && f[0] == "c=IN" {
 			conn = net.ParseIP(f[len(f)-1])
 			if conn != nil && mediaPort > 0 {
-				c.media[mediaKey(conn, mediaPort)] = now
+				c.mediaKeys.put(c.media, mediaKey(conn, mediaPort), now)
 				if mediaPort < 65535 {
-					c.media[mediaKey(conn, mediaPort+1)] = now
+					c.mediaKeys.put(c.media, mediaKey(conn, mediaPort+1), now)
 				}
 			}
 		}
@@ -298,10 +415,10 @@ func (c *Capturer) learnSDP(payload []byte, src, dst net.IP) {
 				ip = src
 			}
 			mediaPort = uint16(p)
-			c.media[mediaKey(ip, mediaPort)] = now
-			// RTCP commonly uses the adjacent odd port; explicit a=rtcp is learned below.
+			c.mediaKeys.put(c.media, mediaKey(ip, mediaPort), now)
+			// RTCP often uses the adjacent odd port; an explicit a=rtcp is also learned below.
 			if p < 65535 {
-				c.media[mediaKey(ip, uint16(p+1))] = now
+				c.mediaKeys.put(c.media, mediaKey(ip, uint16(p+1)), now)
 			}
 		}
 		if len(f) >= 2 && strings.HasPrefix(f[0], "a=rtcp:") {
@@ -311,7 +428,7 @@ func (c *Capturer) learnSDP(payload []byte, src, dst net.IP) {
 				if ip == nil {
 					ip = dst
 				}
-				c.media[mediaKey(ip, uint16(p))] = now
+				c.mediaKeys.put(c.media, mediaKey(ip, uint16(p)), now)
 			}
 		}
 	}
@@ -321,16 +438,13 @@ func (c *Capturer) isLearnedMedia(src, dst net.IP, sp, dp uint16) bool {
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for k, until := range c.media {
-		if now.After(until) {
-			delete(c.media, k)
-		}
-	}
 	return now.Before(c.media[mediaKey(src, sp)]) || now.Before(c.media[mediaKey(dst, dp)])
 }
 
 func (c *Capturer) isDuplicate(src, dst net.IP, sp, dp uint16, payload []byte) bool {
-	if c.cfg.DedupeWindow == 0 {
+	// Equal SIP payloads are not proof of mirrored copies: all retransmissions
+	// remain evidence, even inside the operator's media deduplication window.
+	if c.cfg.DedupeWindow == 0 || isSIP(payload) || c.sipSet[sp] || c.sipSet[dp] {
 		return false
 	}
 	h := sha256.New()
@@ -349,21 +463,15 @@ func (c *Capturer) isDuplicate(src, dst net.IP, sp, dp uint16, payload []byte) b
 	if until, ok := c.dedup[key]; ok && now.Before(until) {
 		return true
 	}
-	c.dedup[key] = now.Add(c.cfg.DedupeWindow)
-	if len(c.dedup) > 65536 {
-		for k, until := range c.dedup {
-			if now.After(until) {
-				delete(c.dedup, k)
-			}
-		}
-	}
+	c.dedupKeys.put(c.dedup, key, now.Add(c.cfg.DedupeWindow))
 	return false
 }
 
-// classify decide el tipo de payload y si debe enviarse según el modo.
-// Endurecido para evitar falsos positivos (DNS, multicast, STUN) clasificados como RTP.
+// classify decides whether a packet matches the configured selection and returns
+// its HEP payload type. It uses packet-local signatures and port heuristics, so it
+// reduces rather than eliminates false positives; it does not reassemble TCP segments.
 func (c *Capturer) classify(srcPort, dstPort uint16, p []byte) (proto byte, want bool) {
-	// SIP: por puerto conocido o por firma textual.
+	// SIP matches a configured port or an initial-line signature.
 	if c.sipSet[srcPort] || c.sipSet[dstPort] || isSIP(p) {
 		c.mu.Lock()
 		c.counts.sip++
@@ -373,15 +481,15 @@ func (c *Capturer) classify(srcPort, dstPort uint16, p []byte) (proto byte, want
 	if !c.cfg.WantRTP && !c.cfg.WantRTCP {
 		return 0, false
 	}
-	// RTP/RTCP: versión 2 en los 2 bits altos del primer byte.
+	// RTP/RTCP packets use version 2 in the high two bits of the first byte.
 	if len(p) < 12 || (p[0]>>6) != 2 {
 		c.mu.Lock()
 		c.counts.other++
 		c.mu.Unlock()
 		return 0, false
 	}
-	// Descartar puertos de servicios bien conocidos (DNS 53, STUN 3478, etc.) y
-	// puertos de señalización; el media RTP usa puertos efímeros altos.
+	// Reject common service and signaling ports before treating an RTP-looking payload
+	// as media. RTP port allocation is deployment-specific, so this is a guardrail.
 	if isWellKnown(srcPort) || isWellKnown(dstPort) || srcPort < 1024 || dstPort < 1024 {
 		c.mu.Lock()
 		c.counts.other++
@@ -389,7 +497,7 @@ func (c *Capturer) classify(srcPort, dstPort uint16, p []byte) (proto byte, want
 		return 0, false
 	}
 	pt := p[1] & 0x7f
-	// RFC 5761: payload types 64-95 reservados → RTCP (SR=200..XR=207 → &0x7f = 72..79).
+	// RFC 5761 reserves payload types 64-95 for RTCP multiplexing (SR=200 through XR=207).
 	if pt >= 64 && pt <= 95 {
 		if c.cfg.WantRTCP {
 			c.mu.Lock()
@@ -416,7 +524,8 @@ func isWellKnown(p uint16) bool {
 	return false
 }
 
-// isSIP detecta un mensaje SIP por su línea inicial (request o status-line).
+// isSIP recognizes only common SIP request methods and the SIP/2.0 status prefix.
+// It intentionally does not parse headers, bodies, or TCP-reassembled messages.
 func isSIP(p []byte) bool {
 	if len(p) < 8 {
 		return false
@@ -437,26 +546,34 @@ var sipMethods = []string{
 	"PRACK ", "SUBSCRIBE ", "NOTIFY ", "PUBLISH ", "INFO ", "REFER ", "MESSAGE ", "UPDATE ",
 }
 
-// Counts devuelve los contadores acumulados (para logging periódico).
+// Counts returns cumulative classification counters for aggregate operational status.
 func (c *Capturer) Counts() (sip, rtp, rtcp, other uint64) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.counts.sip, c.counts.rtp, c.counts.rtcp, c.counts.other
 }
 
-// RtpDirs: RTP con IP origen privada (saliente del host) vs pública (entrante).
+// RtpDirs returns the reporting heuristic split between RFC 1918 IPv4 source and
+// every other source. It does not prove call direction, NAT direction, or ownership.
 func (c *Capturer) RtpDirs() (self, peer uint64) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.counts.rtpSelf, c.counts.rtpPeer
 }
 
+// Health returns cumulative probe counters plus best-effort libpcap statistics.
+// Kernel statistics are unavailable on some capture sources and are not an SLA.
 func (c *Capturer) Health() (duplicate, untrusted, queueDropped, pciSuppressed uint64, kernelRecv, kernelDrop, ifaceDrop int) {
 	c.mu.RLock()
 	duplicate, untrusted, queueDropped, pciSuppressed = c.counts.duplicate, c.counts.untrusted, c.counts.queueDropped, c.counts.pciSuppressed
 	c.mu.RUnlock()
-	if st, err := c.handle.Stats(); err == nil {
-		kernelRecv, kernelDrop, ifaceDrop = st.PacketsReceived, st.PacketsDropped, st.PacketsIfDropped
+	c.handleMu.Lock()
+	defer c.handleMu.Unlock()
+	if c.handle != nil && !c.handleClosed {
+		if st, err := c.handle.Stats(); err == nil {
+			c.kernelStats = *st
+		}
 	}
+	kernelRecv, kernelDrop, ifaceDrop = c.kernelStats.PacketsReceived, c.kernelStats.PacketsDropped, c.kernelStats.PacketsIfDropped
 	return
 }

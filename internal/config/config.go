@@ -1,5 +1,5 @@
-// Package config carga la configuración del probe desde flags de línea de comando.
-// (Fase posterior: archivo YAML /etc/voxywatch-probe/probe.yml.)
+// Package config parses the probe's command-line configuration.
+// It deliberately has no configuration-file reader at this stage.
 package config
 
 import (
@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// detectDefaultIface devuelve la interfaz de la ruta por defecto (la que lleva al
-// gateway) leyendo /proc/net/route. Así el agente viene "preconfigurado": no hay
-// que indicarle la interfaz, elige sola la del tráfico de voz. "" si no la encuentra.
+// detectDefaultIface returns the Linux default-route interface from /proc/net/route.
+// It is a convenience fallback, not voice-traffic detection: the default NIC may not
+// carry the mirrored SIP/RTP traffic. It returns "" when no default route is found.
 func detectDefaultIface() string {
 	data, err := os.ReadFile("/proc/net/route")
 	if err != nil {
@@ -22,7 +22,7 @@ func detectDefaultIface() string {
 	}
 	for _, line := range strings.Split(string(data), "\n")[1:] {
 		f := strings.Fields(line)
-		// Campo[1]=Destination, Campo[3]=Flags. Default route: Destination 00000000 + RTF_UP|RTF_GATEWAY.
+		// Field 1 is Destination; 00000000 denotes the IPv4 default route.
 		if len(f) >= 4 && f[1] == "00000000" {
 			return f[0]
 		}
@@ -30,64 +30,73 @@ func detectDefaultIface() string {
 	return ""
 }
 
+// Config owns the validated runtime settings shared by capture and delivery.
+// Snaplen is bytes, QueueSize is a record count, and DedupeWindow is a Go duration.
 type Config struct {
-	Iface        string   // interfaz a capturar (resuelta; "any" = todas)
-	IfaceAuto    bool     // true si se autodetectó
-	HEPServer    string   // host:port destino HEP (VoxyWatch)
-	Transport    string   // "udp" o "tcp"
-	Mode         string   // sip | siprtcp | siprtp | all
-	SIPPorts     []uint16 // puertos considerados SIP
-	BPF          string   // filtro BPF extra (opcional)
-	CaptureID    uint32   // id del agente/sitio
-	Snaplen      int
-	Verbose      bool
-	Profile      string // span | rspan | erspan | aws-vxlan | auto
-	MediaPolicy  string // learned (safe) | heuristic (advanced)
-	TrustedCIDRs []*net.IPNet
-	QueueSize    int
-	DedupeWindow time.Duration
-	StatusFile   string
-	PCAPFile     string // offline replay for validation; never used by the service launcher
-	// Derivados del modo:
+	Iface        string        // Resolved capture interface; "any" asks libpcap for all interfaces.
+	IfaceAuto    bool          // True only when Iface came from the default-route fallback.
+	HEPServer    string        // HEP receiver host:port.
+	Transport    string        // HEP transport: "udp" or "tcp".
+	Mode         string        // Capture selection: sip, siprtcp, siprtp, or all.
+	SIPPorts     []uint16      // Ports treated as SIP in addition to payload signatures.
+	BPF          string        // Optional operator-supplied libpcap BPF expression.
+	CaptureID    uint32        // HEP capture-agent/site identifier.
+	Snaplen      int           // Maximum captured bytes per packet.
+	Verbose      bool          // Enables additional operational logging.
+	Profile      string        // Declared mirror topology: span, rspan, erspan, aws-vxlan, or auto.
+	MediaPolicy  string        // RTP admission: learned (SDP evidence) or heuristic (advanced).
+	TrustedCIDRs []*net.IPNet  // Optional source/destination allowlist for observed packets.
+	QueueSize    int           // Maximum in-memory HEP records waiting for delivery.
+	DedupeWindow time.Duration // Media duplicate-suppression interval; SIP is never deduplicated.
+	StatusFile   string        // Optional path for the best-effort JSON status snapshot.
+	PCAPFile     string        // Offline replay input for validation; the service launcher does not set it.
+	// Derived from Mode after validation:
 	WantRTP  bool
 	WantRTCP bool
 }
 
+// Parse validates command-line arguments and derives the capture selection.
+// When -i is auto, it chooses the default-route NIC only; operators must select
+// the mirror NIC explicitly whenever it differs.
 func Parse(args []string) (*Config, error) {
 	fs := flag.NewFlagSet("voxywatch-probe", flag.ContinueOnError)
 	c := &Config{}
-	fs.StringVar(&c.Iface, "i", "auto", "interfaz de red (auto = detecta la principal · any = todas)")
-	fs.StringVar(&c.HEPServer, "hs", "127.0.0.1:9060", "destino HEP de VoxyWatch (host:port)")
-	fs.StringVar(&c.Transport, "t", "udp", "transporte HEP: udp | tcp")
-	fs.StringVar(&c.Mode, "m", "siprtp", "modo: sip | siprtcp | siprtp | all")
-	sipPorts := fs.String("sip-ports", "5060,5061", "puertos SIP separados por coma")
-	fs.StringVar(&c.BPF, "bpf", "", "filtro BPF adicional (avanzado)")
-	capID := fs.Uint("capture-id", 2001, "capture/agent id")
-	fs.IntVar(&c.Snaplen, "snaplen", 65535, "bytes máximos por paquete")
-	fs.BoolVar(&c.Verbose, "v", false, "log detallado")
-	fs.StringVar(&c.Profile, "profile", "auto", "encapsulación: auto | span | rspan | erspan | aws-vxlan")
-	fs.StringVar(&c.MediaPolicy, "media-policy", "learned", "RTP: learned (SDP) | heuristic (avanzado)")
-	trusted := fs.String("trusted-cidrs", "", "CIDR/IP de SBCs, separados por coma (recomendado)")
-	fs.IntVar(&c.QueueSize, "queue-size", 8192, "cola HEP acotada")
-	dedupeMs := fs.Int("dedupe-ms", 1500, "ventana de deduplicación del mirror")
-	fs.StringVar(&c.StatusFile, "status-file", "/run/voxywatch-probe/status.json", "snapshot JSON de salud")
-	fs.StringVar(&c.PCAPFile, "read-pcap", "", "reproducir un PCAP offline (validación)")
+	fs.StringVar(&c.Iface, "i", "auto", "network interface (auto = default-route NIC; any = all interfaces)")
+	fs.StringVar(&c.HEPServer, "hs", "127.0.0.1:9060", "VoxyWatch HEP destination (host:port)")
+	fs.StringVar(&c.Transport, "t", "udp", "HEP transport: udp | tcp")
+	fs.StringVar(&c.Mode, "m", "siprtp", "capture mode: sip | siprtcp | siprtp | all")
+	sipPorts := fs.String("sip-ports", "5060,5061", "comma-separated SIP ports")
+	fs.StringVar(&c.BPF, "bpf", "", "additional libpcap BPF filter (advanced)")
+	capID := fs.String("capture-id", "2001", "capture/agent ID (decimal uint32; leading zeros remain decimal)")
+	fs.IntVar(&c.Snaplen, "snaplen", 65535, "maximum captured bytes per packet")
+	fs.BoolVar(&c.Verbose, "v", false, "verbose logging")
+	fs.StringVar(&c.Profile, "profile", "auto", "encapsulation: auto | span | rspan | erspan | aws-vxlan")
+	fs.StringVar(&c.MediaPolicy, "media-policy", "learned", "RTP: learned (SDP) | heuristic (advanced)")
+	trusted := fs.String("trusted-cidrs", "", "comma-separated trusted SBC CIDRs/IPs (recommended)")
+	fs.IntVar(&c.QueueSize, "queue-size", 8192, "bounded HEP queue size")
+	dedupeMs := fs.Int("dedupe-ms", 1500, "media deduplication window in milliseconds; preserves SIP retransmissions")
+	fs.StringVar(&c.StatusFile, "status-file", "/run/voxywatch-probe/status.json", "JSON health snapshot path")
+	fs.StringVar(&c.PCAPFile, "read-pcap", "", "replay an offline PCAP (validation)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
-	c.CaptureID = uint32(*capID)
+	id, err := strconv.ParseUint(*capID, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("capture-id must be a decimal integer between 0 and 4294967295")
+	}
+	c.CaptureID = uint32(id)
 	if c.QueueSize < 256 || c.QueueSize > 262144 {
-		return nil, fmt.Errorf("queue-size fuera de rango: %d", c.QueueSize)
+		return nil, fmt.Errorf("queue-size out of range: %d", c.QueueSize)
 	}
 	if *dedupeMs < 0 || *dedupeMs > 10000 {
-		return nil, fmt.Errorf("dedupe-ms fuera de rango: %d", *dedupeMs)
+		return nil, fmt.Errorf("dedupe-ms out of range: %d", *dedupeMs)
 	}
 	c.DedupeWindow = time.Duration(*dedupeMs) * time.Millisecond
 	if !map[string]bool{"auto": true, "span": true, "rspan": true, "erspan": true, "aws-vxlan": true}[c.Profile] {
-		return nil, fmt.Errorf("profile inválido: %q", c.Profile)
+		return nil, fmt.Errorf("invalid profile: %q", c.Profile)
 	}
 	if c.MediaPolicy != "learned" && c.MediaPolicy != "heuristic" {
-		return nil, fmt.Errorf("media-policy inválida: %q", c.MediaPolicy)
+		return nil, fmt.Errorf("invalid media-policy: %q", c.MediaPolicy)
 	}
 	for _, raw := range strings.Split(*trusted, ",") {
 		raw = strings.TrimSpace(raw)
@@ -103,7 +112,7 @@ func Parse(args []string) (*Config, error) {
 		}
 		_, n, err := net.ParseCIDR(raw)
 		if err != nil {
-			return nil, fmt.Errorf("trusted-cidrs inválido: %q", raw)
+			return nil, fmt.Errorf("invalid trusted-cidrs: %q", raw)
 		}
 		c.TrustedCIDRs = append(c.TrustedCIDRs, n)
 	}
@@ -115,7 +124,7 @@ func Parse(args []string) (*Config, error) {
 		}
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 1 || n > 65535 {
-			return nil, fmt.Errorf("puerto SIP inválido: %q", p)
+			return nil, fmt.Errorf("invalid SIP port: %q", p)
 		}
 		c.SIPPorts = append(c.SIPPorts, uint16(n))
 	}
@@ -130,19 +139,19 @@ func Parse(args []string) (*Config, error) {
 	case "all":
 		c.WantRTP, c.WantRTCP = true, true
 	default:
-		return nil, fmt.Errorf("modo inválido: %q (usa sip|siprtcp|siprtp|all)", c.Mode)
+		return nil, fmt.Errorf("invalid mode: %q (use sip|siprtcp|siprtp|all)", c.Mode)
 	}
 	if c.Transport != "udp" && c.Transport != "tcp" {
-		return nil, fmt.Errorf("transporte inválido: %q", c.Transport)
+		return nil, fmt.Errorf("invalid transport: %q", c.Transport)
 	}
 
-	// Auto-configuración de la interfaz: el agente elige sola la principal.
+	// Use the default-route NIC only as an explicit fallback, never as proof of voice visibility.
 	if c.PCAPFile == "" && (c.Iface == "" || c.Iface == "auto") {
 		if d := detectDefaultIface(); d != "" {
 			c.Iface = d
 			c.IfaceAuto = true
 		} else {
-			return nil, fmt.Errorf("no se pudo detectar una interfaz; usa -i con la NIC espejo dedicada")
+			return nil, fmt.Errorf("could not detect an interface; use -i with the dedicated mirror NIC")
 		}
 	}
 	return c, nil

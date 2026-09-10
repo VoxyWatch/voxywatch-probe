@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1-beta — 2026-09-10
+
+- Bound HEP delivery, media/deduplication state, and shutdown accounting so receiver
+  backpressure is observable rather than unbounded; preserve SIP retransmissions.
+- Harden PCI suppression parsing/reload and HEP length/capture-ID validation.
+- Make installation transactional: validate inputs, preserve omitted options, refuse custom
+  units, atomically replace managed files, restart safely, and recover prior state on failure.
+- Add public operational limits, installer/security guidance, and Asterisk capture evidence.
+
 ## 0.2.0-beta — 2026-08-20
 
 - Decode the innermost call tuple from SPAN/RSPAN VLANs, VXLAN and ERSPAN II/III.
