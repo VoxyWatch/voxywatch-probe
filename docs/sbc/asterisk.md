@@ -2,8 +2,13 @@
 
 Asterisk is **open source**, so it has two documented capture paths. You can use both at
 once. An isolated Asterisk 22.11.0 test observed SIP/RTP and matching portal CDR/flow
-evidence for three answered PCMU calls plus one busy call; its media index was still
-pending, so this is not a playable-audio or universal-topology certification.
+evidence for three answered PCMU calls plus one busy call. A subsequent 40-call run
+reached eight concurrent calls with 6,000 RTP packets in each direction and no probe
+send or capture drops observed. The exact published amd64 binary repeated the short
+call test successfully. Portal audio reconstruction was blocked by an incomplete
+recording in the test environment; this is not a playable-audio or universal-topology
+certification. Verify receiver interoperability, storage health and playback before
+deploying in your own environment.
 
 | | 🛰️ VoxyWatch Probe (recommended) | 🔌 Native HEP (`res_hep`) |
 |--|-----------------------------------|----------------------------|

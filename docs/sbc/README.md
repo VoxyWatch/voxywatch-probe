@@ -27,7 +27,7 @@ Status: ✅ current end-to-end evidence recorded · 🧪 documented/in testing �
 
 | SBC / PBX | Type | Probe (agent) | Native HEP | Guide |
 |-----------|------|---------------|------------|-------|
-| **Asterisk** | PBX/B2BUA | ✅ SIP/RTP/CDR capture evidence; audio index pending | 🧪 documented `res_hep` / `res_hep_rtcp` procedure | [asterisk.md](asterisk.md) |
+| **Asterisk** | PBX/B2BUA | ✅ SIP/RTP/CDR capture evidence; playback not certified | 🧪 documented `res_hep` / `res_hep_rtcp` procedure | [asterisk.md](asterisk.md) |
 | **FreeSWITCH** | PBX/SBC | 🧪 documented procedure | 🧪 documented Sofia `capture-server` procedure | [freeswitch.md](freeswitch.md) |
 | **Kamailio** | SIP proxy/SBC | 📋 | 📋 (`siptrace`/HEP module) | _pending_ |
 | **OpenSIPS** | SIP proxy/SBC | 📋 | 📋 (`proto_hep`/`siptrace`) | _pending_ |
