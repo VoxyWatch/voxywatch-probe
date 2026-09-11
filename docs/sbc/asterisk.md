@@ -10,6 +10,12 @@ recording in the test environment; this is not a playable-audio or universal-top
 certification. Verify receiver interoperability, storage health and playback before
 deploying in your own environment.
 
+A separate follow-up on September 11, 2026 validated a synthetic SIP/RTP replay
+through the packaged probe and VoxyWatch 4.3.8: the portal reconstructed and played
+a six-second stereo recording, including pause, resume and reopening. This closes
+that downstream playback check; it does not turn the earlier Asterisk campaign
+into a new live-Asterisk audio test or certify every deployment topology.
+
 | | 🛰️ VoxyWatch Probe (recommended) | 🔌 Native HEP (`res_hep`) |
 |--|-----------------------------------|----------------------------|
 | Install | An agent on the Asterisk server | Nothing new (ships with Asterisk) |
@@ -86,7 +92,8 @@ The portal may receive SIP. `res_hep` alone does not provide RTP/audio; verify t
 exported evidence for the deployed Asterisk version and modules.
 
 > Want SIP over HEP **and** audio? Use **both**: `res_hep` for the SIP + the **Probe**
-> for the RTP/audio. VoxyWatch joins them by Call-ID.
+> for the RTP/audio. RTP has no SIP Call-ID: correlation requires matching negotiated
+> media endpoints and compatible capture timestamps for the signaling call.
 
 ---
 
