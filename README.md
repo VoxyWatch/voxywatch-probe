@@ -1,6 +1,10 @@
 # VoxyWatch Probe 🛰️
 
-**Beta** · Linux x86_64 / ARM64 · [VoxyWatch](https://voxywatch.com)
+Linux x86_64 / ARM64 · [Latest signed release](https://github.com/VoxyWatch/voxywatch-probe/releases/latest) · [VoxyWatch](https://voxywatch.com)
+
+The 1.0 release line retains the capture boundaries below. Release assets are
+published only after native tests, an authorized live-PBX campaign and independent
+review; a branch or successful build alone is not a released version.
 
 Capture agent for **VoxyWatch**. It can run on a host with a dedicated SPAN/RSPAN
 NIC, receive supported ERSPAN or AWS VXLAN traffic, or run beside a PBX/SBC. It
@@ -157,12 +161,12 @@ availability. Review the status counters and validate a representative authorize
 Requires CGO + libpcap (captures traffic in both directions):
 ```bash
 # amd64 (with Docker, no local Go):
-docker run --rm -v "$PWD":/src -w /src golang:1.23-bookworm \
+docker run --rm -v "$PWD":/src -w /src golang:1.26.6-bookworm \
   sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -o voxywatch-probe-linux-amd64 ./cmd/voxywatch-probe"
 
 # arm64 (emulated ARM container, NOT native ARM validation — needs binfmt:
 #   docker run --privileged --rm tonistiigi/binfmt --install arm64 ):
-docker run --rm --platform linux/arm64 -v "$PWD":/src -w /src golang:1.23-bookworm \
+docker run --rm --platform linux/arm64 -v "$PWD":/src -w /src golang:1.26.6-bookworm \
   sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags='-s -w' -o voxywatch-probe-linux-arm64 ./cmd/voxywatch-probe"
 ```
 

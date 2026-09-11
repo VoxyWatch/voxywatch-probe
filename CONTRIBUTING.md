@@ -9,8 +9,10 @@ preserve the packet-loss and privacy boundaries.
 Install Go and the development headers for `libpcap`, then run the complete local suite:
 
 ```bash
-go test ./...
+go test -race -count=1 ./...
 go vet ./...
+python3 tools/test_installer.py
+python3 tools/test_release_contract.py
 ```
 
 For a manual, local-only smoke exercise, run the Probe against an authorized interface
@@ -46,3 +48,23 @@ Installer documentation must remain exact: it does not silently install/upgrade 
 stores saved options at `/etc/voxywatch-probe/options` with mode `0600`, rejects unmanaged
 units instead of overwriting them, and distinguishes SHA-256 transfer integrity from a
 separate release-signature verification.
+
+## Stable-release live validation
+
+Use an isolated, authorized PBX and a dedicated capture interface. Do not replace
+an existing capture service or send the same traffic through two probes. Offer
+PCMU and PCMA individually, verify answered calls and a 486 Busy response, and
+check the exact calls in the receiving portal (CDR, SIP flow and reconstructed
+audio). Download a stereo WAV for each codec and verify non-silent channels,
+expected duration, playback, pause and resume.
+
+The minimum sustained campaign is 104 answered calls, eight simultaneous media
+sessions, 140 seconds each (at least 30 minutes elapsed), alternating the two
+codecs. Record actual overlap, unique RTP packets, probe drops/send errors, CPU,
+memory and receiver storage health. Abort on failures or resource pressure;
+close active test dialogs and preserve pre-existing services and recordings.
+This is a reproducible validation workload, not a maximum capacity or SLA claim.
+
+Both release architectures must pass native CI. Keep Go's product/build version
+separate from the JavaScript runtime used internally by GitHub Actions. Actions
+are pinned to immutable reviewed commits; CI can build but cannot sign or publish.

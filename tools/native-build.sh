@@ -2,7 +2,7 @@
 # CI builds artifacts only. A release owner verifies both architectures and signs
 # their exact SHA-256 hashes separately; this script cannot publish or sign.
 set -euo pipefail
-version=${BUILD_VERSION:-0.2.1-beta}
+version=${BUILD_VERSION:-1.0.0}
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?$ ]] || {
   echo 'Invalid BUILD_VERSION' >&2; exit 1;
 }
@@ -13,6 +13,7 @@ case "$(uname -m):$arch" in x86_64:amd64|aarch64:arm64) ;; *) echo 'Native build
 go test -race -count=1 ./...
 go vet ./...
 python3 tools/test_installer.py
+python3 tools/test_release_contract.py
 bash -n install.sh
 mkdir -p dist
 asset=voxywatch-probe-linux-$arch

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0 — 2026-09-11
+
+- Prepare the stable release line with unchanged packet-capture behavior and
+  explicit protocol, privacy, deployment and capacity boundaries.
+- Move pinned GitHub Actions to Node24 without changing the Go toolchain or
+  Debian build baseline; retain native amd64/ARM64 tests and one-day CI retention.
+- Require real-PBX PCMU/PCMA playback and a bounded sustained-load campaign before
+  publishing stable assets; add a release-default/CI regression contract.
+
 ## 0.2.1-beta — 2026-09-10
 
 - Bound HEP delivery, media/deduplication state, and shutdown accounting so receiver
