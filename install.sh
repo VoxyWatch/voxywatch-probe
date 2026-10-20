@@ -5,11 +5,16 @@
 set -euo pipefail
 umask 077
 REPO=VoxyWatch/voxywatch-probe
-BIN=/usr/local/bin/voxywatch-probe
-UNIT=/etc/systemd/system/voxywatch-probe.service
-CONFIG=/etc/voxywatch-probe/options
+BIN=/usr/local/bin/voxywatch-capture-agent
+UNIT=/etc/systemd/system/voxywatch-capture-agent.service
+CONFIG=/etc/voxywatch-capture-agent/options
+# Shared with old installers, so a concurrent legacy updater cannot race migration.
 LOCK=/run/voxywatch-probe-install/install.lock
-SERVICE=voxywatch-probe.service
+SERVICE=voxywatch-capture-agent.service
+OLD_BIN=/usr/local/bin/voxywatch-probe
+OLD_UNIT=/etc/systemd/system/voxywatch-probe.service
+OLD_CONFIG=/etc/voxywatch-probe/options
+OLD_SERVICE=voxywatch-probe.service
 die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 for command in python3 curl flock systemctl sha256sum; do
   command -v "$command" >/dev/null || die "missing prerequisite: $command"
@@ -30,15 +35,46 @@ if os.path.lexists(lock):
 PY
 # Parent is private and verified before opening; no world-writable /run/lock path.
 exec 9>"$LOCK"
-flock -n 9 || die 'another probe installation is in progress'
+flock -n 9 || die 'another capture agent installation is in progress'
 declare -A options=([server]='' [site]=2001 [iface]=auto [mode]=siprtp [transport]=udp [profile]=auto [media-policy]=learned [trusted-cidrs]='')
 keys=(server site iface mode transport profile media-policy trusted-cidrs)
 legacy=0
-for path in "$BIN" "$UNIT" "$CONFIG"; do
+migrating=0
+source_unit=$UNIT; source_bin=$BIN; source_config=$CONFIG
+for path in "$BIN" "$UNIT" "$CONFIG" "$OLD_BIN" "$OLD_UNIT" "$OLD_CONFIG"; do
   [ ! -L "$path" ] || die "refusing symlink: $path"
   [ ! -e "$path" ] || [ -f "$path" ] || die "not a regular file: $path"
 done
-config_parent=$(dirname "$CONFIG")
+python3 - "$BIN" "$UNIT" "$CONFIG" "$OLD_BIN" "$OLD_UNIT" "$OLD_CONFIG" <<'PY'
+import pathlib, sys
+for value in sys.argv[1:]:
+    for parent in pathlib.Path(value).parents:
+        if parent.is_symlink():
+            sys.exit('ERROR: refusing symlink destination ancestor')
+PY
+for service in "$SERVICE" "$OLD_SERVICE"; do
+  fragment=$(systemctl show "$service" -p FragmentPath --value) || die 'cannot inspect service source'
+  case "$fragment" in ""|"$UNIT"|"$OLD_UNIT") ;; *) die 'unmanaged service source; review manually';; esac
+  dropins=$(systemctl show "$service" -p DropInPaths --value) || die 'cannot inspect service overrides'
+  [ -z "$dropins" ] || die 'service overrides require manual migration'
+done
+for path in "$OLD_BIN" "$OLD_UNIT" "$OLD_CONFIG"; do
+  [ ! -e "$path.pre-capture-agent" ] && [ ! -L "$path.pre-capture-agent" ] ||
+    { [ ! -e "$OLD_UNIT" ] || die 'previous migration backup already exists'; }
+done
+if [ -e "$OLD_BIN" ] || [ -e "$OLD_UNIT" ] || [ -e "$OLD_CONFIG" ]; then
+  [ ! -e "$BIN" ] && [ ! -e "$UNIT" ] && [ ! -e "$CONFIG" ] || die 'ambiguous dual installation; review manually'
+  [ -f "$OLD_UNIT" ] && [ -f "$OLD_BIN" ] || die 'incomplete legacy installation; review manually'
+  migrating=1
+  source_unit=$OLD_UNIT; source_bin=$OLD_BIN; source_config=$OLD_CONFIG
+fi
+for unit in "$UNIT" "$OLD_UNIT"; do
+  [ ! -e "$unit.d" ] && [ ! -L "$unit.d" ] || die 'service drop-ins require manual migration'
+done
+for parent in "$(dirname "$CONFIG")" "$(dirname "$OLD_CONFIG")"; do
+  [ ! -L "$parent" ] || die 'refusing symlink configuration directory'
+done
+for config_parent in "$(dirname "$CONFIG")" "$(dirname "$OLD_CONFIG")"; do
 if [ -e "$config_parent" ] || [ -L "$config_parent" ]; then
   python3 - "$config_parent" <<'PY'
 import os, stat, sys
@@ -47,10 +83,11 @@ if not stat.S_ISDIR(s.st_mode) or not (s.st_mode & stat.S_IXOTH):
     sys.exit('ERROR: configuration directory must be traversable by DynamicUser for PCI suppression; review its permissions manually')
 PY
 fi
-if [ -f "$UNIT" ] && [ ! -e "$CONFIG" ]; then
+done
+if [ -f "$source_unit" ] && [ ! -e "$source_config" ]; then
   # Never execute/source unit text. Adopt only the exact public v0.2.0 template,
   # including its argument order and whitespace; custom options fail closed.
-  saved=$(python3 - "$UNIT" "$BIN" <<'PY'
+  saved=$(python3 - "$source_unit" "$source_bin" <<'PY'
 import pathlib, re, sys
 unit, binary = sys.argv[1:]
 text = pathlib.Path(unit).read_text()
@@ -87,7 +124,7 @@ PY
   done <<< "$saved"
   legacy=1
 fi
-if [ -f "$CONFIG" ]; then
+if [ -f "$source_config" ]; then
   declare -A seen=()
   while IFS= read -r line || [ -n "$line" ]; do
     [[ "$line" == *$'\t'* ]] || die 'invalid saved options'
@@ -95,7 +132,7 @@ if [ -f "$CONFIG" ]; then
     case "$key" in server|site|iface|mode|transport|profile|media-policy|trusted-cidrs) ;; *) die 'unknown saved option';; esac
     [ -z "${seen[$key]:-}" ] || die 'duplicate saved option'
     seen[$key]=1; options[$key]=$value
-  done < "$CONFIG"
+  done < "$source_config"
   [ "${#seen[@]}" = 8 ] || die 'incomplete saved options'
 fi
 validate(){
@@ -137,16 +174,16 @@ render_unit(){
   local trusted=''
   [ -z "${options[trusted-cidrs]}" ] || trusted=" -trusted-cidrs ${options[trusted-cidrs]}"
   cat <<EOF
-# Managed by voxywatch-probe installer v1; customize options via install.sh.
+# Managed by voxywatch-capture-agent installer v1; customize options via install.sh.
 [Unit]
-Description=VoxyWatch Probe passive capture
+Description=VoxyWatch Capture Agent passive capture
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$BIN -hs ${options[server]} -i ${options[iface]} -m ${options[mode]} -t ${options[transport]} -profile ${options[profile]} -media-policy ${options[media-policy]}$trusted -capture-id ${options[site]}
+ExecStart=$BIN -hs ${options[server]} -i ${options[iface]} -m ${options[mode]} -t ${options[transport]} -profile ${options[profile]} -media-policy ${options[media-policy]}$trusted -capture-id ${options[site]} -status-file /run/voxywatch-capture-agent/status.json
 DynamicUser=yes
-RuntimeDirectory=voxywatch-probe
+RuntimeDirectory=voxywatch-capture-agent
 RuntimeDirectoryMode=0750
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
@@ -160,10 +197,15 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 }
-if [ -e "$UNIT" ]; then
+if [ -e "$source_unit" ]; then
   validate
   if [ "$legacy" = 0 ]; then
-    cmp -s "$UNIT" <(render_unit) || die 'customized unit: refusing to overwrite; preserve and migrate manually'
+    if [ "$migrating" = 1 ]; then
+      cmp -s "$source_unit" <(render_unit | sed -e "s|$BIN|$OLD_BIN|g" -e 's/ -status-file \/run\/voxywatch-capture-agent\/status.json//' -e 's/voxywatch-capture-agent/voxywatch-probe/g' -e 's/VoxyWatch Capture Agent/VoxyWatch Probe/g') ||
+        die 'customized legacy unit: refusing to overwrite; preserve and migrate manually'
+    else
+      cmp -s "$UNIT" <(render_unit) || die 'customized unit: refusing to overwrite; preserve and migrate manually'
+    fi
   fi
 fi
 while [ "$#" -gt 0 ]; do
@@ -184,14 +226,26 @@ work=$(mktemp -d)
 stages=(); transaction=0; committed=0; was_active=0; was_enabled=0
 systemctl is-active --quiet "$SERVICE" && was_active=1
 systemctl is-enabled --quiet "$SERVICE" && was_enabled=1
+old_active=0; old_enabled=0
+if [ "$migrating" = 1 ]; then
+  systemctl is-active --quiet "$OLD_SERVICE" && old_active=1
+  systemctl is-enabled --quiet "$OLD_SERVICE" && old_enabled=1
+fi
 targets=("$BIN" "$UNIT" "$CONFIG")
+if [ "$migrating" = 1 ]; then targets+=("$OLD_BIN" "$OLD_UNIT" "$OLD_CONFIG"); fi
 cleanup(){
   local rc=$? i rollback_ok=1 directory
   trap - EXIT INT TERM
   if [ "$transaction" = 1 ] && [ "$committed" = 0 ]; then
     printf 'Installation failed; restoring previous files and service state.\n' >&2
-    systemctl stop "$SERVICE" >/dev/null 2>&1 || rollback_ok=0
-    for i in 0 1 2; do
+    if [ -f "$UNIT" ] || [ "$was_active" = 1 ]; then
+      systemctl stop "$SERVICE" >/dev/null 2>&1 || rollback_ok=0
+      # Disable while the unit still exists; systemd may reject an absent unit.
+      if [ "$was_enabled" = 0 ]; then
+        systemctl disable "$SERVICE" >/dev/null 2>&1 || rollback_ok=0
+      fi
+    fi
+    for i in "${!targets[@]}"; do
       if [ -f "${stages[$i]}/previous" ]; then
         mv -f "${stages[$i]}/previous" "${targets[$i]}" || rollback_ok=0
       else
@@ -199,15 +253,28 @@ cleanup(){
       fi
     done
     systemctl daemon-reload || rollback_ok=0
-    if [ "$was_enabled" = 1 ]; then systemctl enable "$SERVICE" >/dev/null 2>&1 || rollback_ok=0
-    else systemctl disable "$SERVICE" >/dev/null 2>&1 || rollback_ok=0; fi
+    if [ "$was_enabled" = 1 ]; then systemctl enable "$SERVICE" >/dev/null 2>&1 || rollback_ok=0; fi
     if [ "$was_active" = 1 ]; then
       systemctl restart "$SERVICE" && systemctl is-active --quiet "$SERVICE" || rollback_ok=0
+    fi
+    if [ "$migrating" = 1 ]; then
+      if [ "$old_enabled" = 1 ]; then systemctl enable "$OLD_SERVICE" || rollback_ok=0
+      else systemctl disable "$OLD_SERVICE" || rollback_ok=0; fi
+      if [ "$old_active" = 1 ]; then
+        systemctl restart "$OLD_SERVICE" && systemctl is-active --quiet "$OLD_SERVICE" || rollback_ok=0
+      fi
     fi
     [ "$rollback_ok" = 1 ] || printf 'ERROR: rollback incomplete; manual service recovery required.\n' >&2
     rc=1
   fi
   if [ "$rollback_ok" = 1 ]; then
+    if [ "$migrating" = 1 ] && [ "$committed" = 1 ]; then
+      for i in 3 4 5; do
+        if [ -f "${stages[$i]}/previous" ]; then
+          mv "${stages[$i]}/previous" "${targets[$i]}.pre-capture-agent"
+        fi
+      done
+    fi
     for directory in "${stages[@]}"; do
       rm -f -- "$directory/next" "$directory/previous"
       rmdir -- "$directory"
@@ -219,7 +286,7 @@ cleanup(){
   fi
   exit "$rc"
 }
-asset=voxywatch-probe-linux-$ARCH
+asset=voxywatch-capture-agent-linux-$ARCH
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -229,6 +296,9 @@ prefix="https://github.com/$REPO/releases/tag/"
 [[ "$release" == "$prefix"* ]] || die 'unexpected release redirect'
 tag=${release#"$prefix"}
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || die 'invalid release tag'
+# Only known pre-rename immutable tags use the old asset contract.
+# No fallback after checksum/download errors or for unknown future tags.
+case "$tag" in v0.2.1-beta|v1.0.0) asset=voxywatch-probe-linux-$ARCH;; esac
 url="https://github.com/$REPO/releases/download/$tag/$asset"
 curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 180 "$url" -o "$work/$asset"
 curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 60 "$url.sha256" -o "$work/checksum"
@@ -237,12 +307,12 @@ read -r expected filename < "$work/checksum"
 actual=$(sha256sum "$work/$asset"); actual=${actual%% *}
 [ "$actual" = "${expected,,}" ] || die 'SHA-256 mismatch; refusing to install'
 # Staging lives on each destination filesystem; rename never overwrites a live inode.
-for i in 0 1 2; do
+for i in "${!targets[@]}"; do
   parent=$(dirname "${targets[$i]}")
   # DynamicUser must traverse the shared PCI directory. Only options stays 0600.
   # Existing permissions are never silently broadened.
   mkdir -p -m 0755 "$parent"
-  stages[$i]=$(mktemp -d "$parent/.probe-install.XXXXXX")
+  stages[$i]=$(mktemp -d "$parent/.capture-agent-install.XXXXXX")
   if [ -f "${targets[$i]}" ]; then cp -p "${targets[$i]}" "${stages[$i]}/previous"; fi
 done
 install -m 0755 "$work/$asset" "${stages[0]}/next"
@@ -250,11 +320,19 @@ render_unit > "${stages[1]}/next"
 chmod 0644 "${stages[1]}/next"
 for key in "${keys[@]}"; do printf '%s\t%s\n' "$key" "${options[$key]}"; done > "${stages[2]}/next"
 transaction=1
+if [ "$migrating" = 1 ]; then
+  systemctl stop "$OLD_SERVICE"
+  if systemctl is-active --quiet "$OLD_SERVICE"; then die 'legacy service still active'; fi
+  systemctl disable "$OLD_SERVICE"
+  for i in 3 4 5; do rm -f "${targets[$i]}"; done
+fi
 for i in 0 1 2; do mv -f "${stages[$i]}/next" "${targets[$i]}"; done
 systemctl daemon-reload
-systemctl enable "$SERVICE"
-systemctl restart "$SERVICE"
-sleep 2
-systemctl is-active --quiet "$SERVICE" || die 'service did not become active'
+if [ "$migrating" = 0 ] || [ "$old_enabled" = 1 ]; then systemctl enable "$SERVICE"; fi
+if [ "$migrating" = 0 ] || [ "$old_active" = 1 ]; then
+  systemctl restart "$SERVICE"
+  sleep 2
+  systemctl is-active --quiet "$SERVICE" || die 'service did not become active'
+fi
 committed=1
-printf 'VoxyWatch Probe %s installed and active (%s).\n' "$tag" "$ARCH"
+printf 'VoxyWatch Capture Agent %s installed (%s); migration preserves prior service state.\n' "$tag" "$ARCH"

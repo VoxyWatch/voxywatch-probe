@@ -1,4 +1,4 @@
-// Package config parses the probe's command-line configuration.
+// Package config parses the capture agent's command-line configuration.
 // It deliberately has no configuration-file reader at this stage.
 package config
 
@@ -59,7 +59,7 @@ type Config struct {
 // When -i is auto, it chooses the default-route NIC only; operators must select
 // the mirror NIC explicitly whenever it differs.
 func Parse(args []string) (*Config, error) {
-	fs := flag.NewFlagSet("voxywatch-probe", flag.ContinueOnError)
+	fs := flag.NewFlagSet("voxywatch-capture-agent", flag.ContinueOnError)
 	c := &Config{}
 	fs.StringVar(&c.Iface, "i", "auto", "network interface (auto = default-route NIC; any = all interfaces)")
 	fs.StringVar(&c.HEPServer, "hs", "127.0.0.1:9060", "VoxyWatch HEP destination (host:port)")
@@ -75,7 +75,7 @@ func Parse(args []string) (*Config, error) {
 	trusted := fs.String("trusted-cidrs", "", "comma-separated trusted SBC CIDRs/IPs (recommended)")
 	fs.IntVar(&c.QueueSize, "queue-size", 8192, "bounded HEP queue size")
 	dedupeMs := fs.Int("dedupe-ms", 1500, "media deduplication window in milliseconds; preserves SIP retransmissions")
-	fs.StringVar(&c.StatusFile, "status-file", "/run/voxywatch-probe/status.json", "JSON health snapshot path")
+	fs.StringVar(&c.StatusFile, "status-file", "/run/voxywatch-capture-agent/status.json", "JSON health snapshot path")
 	fs.StringVar(&c.PCAPFile, "read-pcap", "", "replay an offline PCAP (validation)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err

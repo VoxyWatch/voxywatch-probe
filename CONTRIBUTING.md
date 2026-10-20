@@ -1,4 +1,4 @@
-# Contributing to VoxyWatch Probe
+# Contributing to VoxyWatch Capture Agent
 
 This repository handles observed voice traffic, so small parser or capture changes can
 alter what reaches VoxyWatch. Keep changes narrow, explain protocol assumptions, and
@@ -15,7 +15,7 @@ python3 tools/test_installer.py
 python3 tools/test_release_contract.py
 ```
 
-For a manual, local-only smoke exercise, run the Probe against an authorized interface
+For a manual, local-only smoke exercise, run the Capture Agent against an authorized interface
 or offline PCAP and use `tools/gen_raw_traffic.py` only on a controlled test host. The
 generator creates cleartext synthetic UDP SIP/RTP; it is not a load test, a SIP
 conformance test, or evidence of production compatibility.
@@ -25,7 +25,7 @@ conformance test, or evidence of production compatibility.
 - Add or update focused tests for HEP layout, packet classification, and supported
   encapsulations. Do not weaken a negative test merely to accept a new packet shape.
 - State whether a change operates on individual packets, TCP segments, or complete
-  reassembled messages. The Probe currently does not reassemble TCP streams or IP
+  reassembled messages. The Capture Agent currently does not reassemble TCP streams or IP
   fragments.
 - Keep capture and sender queues bounded. A slow HEP receiver must not silently block
   libpcap packet processing. Document the drop, TTL/FIFO eviction, and delivery-acknowledgement
@@ -45,7 +45,7 @@ The default-route NIC is not voice autodetection; instructions must tell operato
 select the actual mirror interface.
 
 Installer documentation must remain exact: it does not silently install/upgrade packages,
-stores saved options at `/etc/voxywatch-probe/options` with mode `0600`, rejects unmanaged
+stores saved options at `/etc/voxywatch-capture-agent/options` with mode `0600`, rejects unmanaged
 units instead of overwriting them, and distinguishes SHA-256 transfer integrity from a
 separate release-signature verification.
 
@@ -60,7 +60,7 @@ expected duration, playback, pause and resume.
 
 The minimum sustained campaign is 104 answered calls, eight simultaneous media
 sessions, 140 seconds each (at least 30 minutes elapsed), alternating the two
-codecs. Record actual overlap, unique RTP packets, probe drops/send errors, CPU,
+codecs. Record actual overlap, unique RTP packets, capture agent drops/send errors, CPU,
 memory and receiver storage health. Abort on failures or resource pressure;
 close active test dialogs and preserve pre-existing services and recordings.
 This is a reproducible validation workload, not a maximum capacity or SLA claim.

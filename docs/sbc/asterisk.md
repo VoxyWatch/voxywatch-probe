@@ -3,7 +3,7 @@
 Asterisk is **open source**, so it has two documented capture paths. You can use both at
 once. An isolated Asterisk 22.11.0 test observed SIP/RTP and matching portal CDR/flow
 evidence for three answered PCMU calls plus one busy call. A subsequent 40-call run
-reached eight concurrent calls with 6,000 RTP packets in each direction and no probe
+reached eight concurrent calls with 6,000 RTP packets in each direction and no capture agent
 send or capture drops observed. The exact published amd64 binary repeated the short
 call test successfully. Portal audio reconstruction was blocked by an incomplete
 recording in the test environment; this is not a playable-audio or universal-topology
@@ -11,24 +11,24 @@ certification. Verify receiver interoperability, storage health and playback bef
 deploying in your own environment.
 
 A separate follow-up on September 11, 2026 validated a synthetic SIP/RTP replay
-through the packaged probe and VoxyWatch 4.3.8: the portal reconstructed and played
+through the packaged capture agent and VoxyWatch 4.3.8: the portal reconstructed and played
 a six-second stereo recording, including pause, resume and reopening. This closes
 that downstream playback check; it does not turn the earlier Asterisk campaign
 into a new live-Asterisk audio test or certify every deployment topology.
 
-| | 🛰️ VoxyWatch Probe (recommended) | 🔌 Native HEP (`res_hep`) |
+| | 🛰️ VoxyWatch Capture Agent (recommended) | 🔌 Native HEP (`res_hep`) |
 |--|-----------------------------------|----------------------------|
 | Install | An agent on the Asterisk server | Nothing new (ships with Asterisk) |
 | Captures | Observable SIP, RTP, and RTCP packets | SIP (and RTCP only if exported) |
 | Audio? | Can forward observed RTP; downstream audio is conditional | No RTP/audio from `res_hep` alone |
 | Touches Asterisk config | **No** (passive capture) | Yes (edit `res_hep.conf`) |
 
-> `res_hep` alone does not supply RTP/audio. A Probe capture point may forward observed RTP,
+> `res_hep` alone does not supply RTP/audio. A Capture Agent capture point may forward observed RTP,
 > but does not guarantee audio reconstruction for every topology or call.
 
 ---
 
-## Option A — VoxyWatch Probe (observed RTP capture) ⭐
+## Option A — VoxyWatch Capture Agent (observed RTP capture) ⭐
 
 The agent installs on the **same server where Asterisk runs** and listens to the network
 traffic. It does not modify Asterisk.
@@ -49,8 +49,8 @@ That's it. The installer:
 
 ### Verify
 ```bash
-systemctl status voxywatch-probe          # should be "active (running)"
-journalctl -u voxywatch-probe -f          # you'll see: [stats] sip=.. rtp=.. sent=..
+systemctl status voxywatch-capture-agent          # should be "active (running)"
+journalctl -u voxywatch-capture-agent -f          # you'll see: [stats] sip=.. rtp=.. sent=..
 ```
 Make an authorized test call and inspect the VoxyWatch portal (Calls / CDR) for expected
 evidence. An active service or SIP packets alone do not prove RTP, both directions, or audio.
@@ -91,7 +91,7 @@ asterisk -rx "hep show status"
 The portal may receive SIP. `res_hep` alone does not provide RTP/audio; verify the actual
 exported evidence for the deployed Asterisk version and modules.
 
-> Want SIP over HEP **and** audio? Use **both**: `res_hep` for the SIP + the **Probe**
+> Want SIP over HEP **and** audio? Use **both**: `res_hep` for the SIP + the **Capture Agent**
 > for the RTP/audio. RTP has no SIP Call-ID: correlation requires matching negotiated
 > media endpoints and compatible capture timestamps for the signaling call.
 
@@ -99,15 +99,15 @@ exported evidence for the deployed Asterisk version and modules.
 
 ## FAQ
 
-- **Does the Probe degrade Asterisk?** It does not sit in the call-control path or modify
+- **Does the Capture Agent degrade Asterisk?** It does not sit in the call-control path or modify
   Asterisk, but libpcap capture and forwarding consume local resources. Monitor counters and
   size the host for its traffic rate.
-- **I don't see audio.** `res_hep` does not send RTP/audio. For the Probe path, verify the
+- **I don't see audio.** `res_hep` does not send RTP/audio. For the Capture Agent path, verify the
   selected interface, cleartext RTP, both required directions, and downstream correlation.
 - **The call has RTP but audio is pending.** RTP capture and CDR/flow correlation do not by
   themselves prove media indexing or playable audio. Check the downstream media state and
   retain the capture counters for the authorized test call.
-- **My media is encrypted (SRTP/DTLS).** The Probe does not decrypt media, so encrypted
+- **My media is encrypted (SRTP/DTLS).** The Capture Agent does not decrypt media, so encrypted
   RTP cannot yield a WAV through this path. SIP or RTCP may still be visible only if the
   selected mirror carries them; metrics and audio remain dependent on actual evidence.
-- **I have several Asterisk boxes.** Install the Probe on each one pointing to the same VoxyWatch; use a different `capture_id`/`--site` to identify them.
+- **I have several Asterisk boxes.** Install the Capture Agent on each one pointing to the same VoxyWatch; use a different `capture_id`/`--site` to identify them.

@@ -1,5 +1,5 @@
 // Package hep encodes HEPv3 records for VoxyWatch-compatible receivers.
-// It owns the wire layout used by this probe; callers supply observed packet metadata.
+// It owns the wire layout used by this capture agent; callers supply observed packet metadata.
 package hep
 
 import (

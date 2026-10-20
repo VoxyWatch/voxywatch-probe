@@ -1,4 +1,4 @@
-# VoxyWatch Probe 🛰️
+# VoxyWatch Capture Agent 🛰️
 
 Linux x86_64 / ARM64 · [Latest signed release](https://github.com/VoxyWatch/voxywatch-probe/releases/latest) · [VoxyWatch](https://voxywatch.com)
 
@@ -11,7 +11,7 @@ NIC, receive supported ERSPAN or AWS VXLAN traffic, or run beside a PBX/SBC. It
 **sniffs observable network packets** (passively, without changing PBX/SBC
 configuration) and sends SIP, RTP, and RTCP observations to VoxyWatch in HEPv3.
 VoxyWatch correlates those observations and may reconstruct media when the capture
-is complete and eligible; the Probe never reconstructs or decrypts audio itself.
+is complete and eligible; the Capture Agent never reconstructs or decrypts audio itself.
 
 - A single Go binary plus `libpcap`. Passive capture is off the call-control path,
   but it still consumes host CPU, memory, kernel capture buffers, and network I/O.
@@ -28,7 +28,7 @@ is complete and eligible; the Probe never reconstructs or decrypts audio itself.
   it is not a claim that every PBX has been tested.
 - SRTP remains encrypted and is not decoded. HEP transport supports UDP or TCP,
   not TLS; use a private, protected network path. TCP payloads are forwarded as
-  packet-local segments: the Probe does not reassemble TCP streams or IP fragments.
+  packet-local segments: the Capture Agent does not reassemble TCP streams or IP fragments.
   Sending a HEP record is not an acknowledgement that a receiver stored or
   correlated it.
 - Linux **x64 / arm64** (on-premise, AWS Graviton, GCP).
@@ -56,8 +56,8 @@ that copy is bundled inside the signed VoxyWatch release and remains OFF by defa
 
 Verify:
 ```bash
-systemctl status voxywatch-probe
-journalctl -u voxywatch-probe -f     # [stats] sip=.. rtp=.. sent=..
+systemctl status voxywatch-capture-agent
+journalctl -u voxywatch-capture-agent -f     # [stats] sip=.. rtp=.. sent=..
 ```
 Make an authorized test call and check it in the VoxyWatch portal. Seeing the service
 running or a nonzero SIP counter does not prove that RTP, both directions, or
@@ -65,7 +65,7 @@ reconstructable audio are present.
 
 The installer serializes concurrent runs, validates every supplied option, preserves
 previously saved options when an option is omitted, and atomically replaces the binary,
-unit, and `/etc/voxywatch-probe/options` (mode `0600`). It restarts an updated service
+unit, and `/etc/voxywatch-capture-agent/options` (mode `0600`). It restarts an updated service
 and restores the previous files and service state if the transaction fails. It refuses
 to overwrite a custom unit or to broaden unsafe existing PCI-directory permissions;
 migrate those deployments manually according to local policy. SHA-256 verifies transfer
@@ -76,6 +76,31 @@ has fingerprint `80ED E252 3760 E622 FB97 BC15 4B21 BBC5 F215 26E3`.
 After importing and checking that key, use `gpg --verify BINARY.asc BINARY`
 with the matching downloaded binary and signature. Never substitute a key with a
 different fingerprint just to make verification pass.
+
+### Upgrade from VoxyWatch Probe
+
+The repository URL and Go module path remain unchanged. The installed executable
+and service are now `voxywatch-capture-agent`, with configuration in
+`/etc/voxywatch-capture-agent/options` and health in
+`/run/voxywatch-capture-agent/status.json`.
+
+Running the installer migrates only an exact installer-managed legacy unit
+(including the original v0.2 template). It preserves options and the old service's
+active/enabled states, stops the old service before starting the new one, and
+restores both files and service state if activation fails. Original binary, unit
+and saved options remain beside their old paths with suffix `.pre-capture-agent`;
+PCI suppression files are left intact. Dual installations, symlinks, custom
+units and drop-ins require manual review and are not overwritten.
+
+Use the new executable/service names after migration: no second legacy service
+or binary alias is installed. Existing PCI writers and `VW_PROBE_PCI_FILE` remain
+compatible as described below. Update status-file consumers to the canonical path.
+Until a renamed release exists, only exact legacy tags `v0.2.1-beta` and
+`v1.0.0` use legacy asset filenames; binaries and checksums always share the same
+resolved immutable tag. Their embedded version/help text remains historical.
+Other versions require canonical assets; download or checksum failures never
+trigger an older-version fallback. New captures use the canonical PCI default;
+historical binaries continue to use their legacy PCI path until upgraded.
 
 ---
 
@@ -95,7 +120,7 @@ Asterisk guide ready: **[docs/sbc/asterisk.md](docs/sbc/asterisk.md)**.
 ## Manual usage (no installer)
 
 ```bash
-sudo ./voxywatch-probe -hs YOUR_VOXYWATCH:9060        # default-route NIC fallback
+sudo ./voxywatch-capture-agent -hs YOUR_VOXYWATCH:9060        # default-route NIC fallback
 ```
 
 | Flag | Default | Description |
@@ -121,22 +146,26 @@ VoxyWatch product guide [`PASSIVE_MIRROR_CAPTURE.md`](https://github.com/VoxyWat
 
 ## 🔒 PCI-DSS suppression (at the source)
 
-The Probe can suppress selected RTP streams at the capture source when an authorized
+The Capture Agent can suppress selected RTP streams at the capture source when an authorized
 payment-window signal is supplied. This is a privacy control, not a PCI-DSS certification.
 Correct triggering and stream identification must be tested; it cannot retract data
 already sent or guarantee suppression of traffic captured through another path.
 
-It hot-reloads `pci_suppress.json` (path via `VW_PROBE_PCI_FILE`, default
-`/etc/voxywatch-probe/pci_suppress.json`) and skips sending any RTP whose **SSRC** is listed.
+It hot-reloads `pci_suppress.json` (path via `VOXYWATCH_PCI_FILE`, default
+`/etc/voxywatch-capture-agent/pci_suppress.json`) and skips sending any RTP whose **SSRC** is listed.
+`VW_PROBE_PCI_FILE` remains supported when the canonical variable is unset.
+With neither variable set, an absent canonical file falls back to
+`/etc/voxywatch-probe/pci_suppress.json` for existing writers. An explicitly selected
+file never falls back; an empty canonical file overrides legacy suppression.
 Empty/absent file → no effect. Coordinate it with the VoxyWatch recording policy and
 validate an authorized synthetic payment-window test before relying on suppression.
-The file is a local capture control: the Probe does not synchronize it to a remote
+The file is a local capture control: the Capture Agent does not synchronize it to a remote
 VoxyWatch server. Keep it protected under your local policy; this feature alone is not
 PCI-DSS compliance.
 
 ## Capture boundaries and limitations
 
-The Probe forwards packets it can observe; it does not establish a media path or
+The Capture Agent forwards packets it can observe; it does not establish a media path or
 guarantee that every call has audio. A usable result needs the correct capture point,
 both relevant directions where required, cleartext media, sufficient packet retention,
 and successful downstream correlation. SPAN oversubscription, kernel/interface drops,
@@ -149,7 +178,7 @@ authorization or duplicate-suppression history. HEP delivery has no end-to-end s
 acknowledgement, so a `sent` counter is not proof of durable remote delivery.
 
 SIP, RTP, and RTCP recognition is packet-local. UDP payloads can be classified directly;
-for TCP the Probe forwards individual TCP segments and does **not** reassemble SIP or
+for TCP the Capture Agent forwards individual TCP segments and does **not** reassemble SIP or
 media streams. It also does not reassemble IP fragments. Do not treat a packet counter
 as proof of complete signaling, media quality, one-way-audio diagnosis, or audio
 availability. Review the status counters and validate a representative authorized call.
@@ -162,16 +191,16 @@ Requires CGO + libpcap (captures traffic in both directions):
 ```bash
 # amd64 (with Docker, no local Go):
 docker run --rm -v "$PWD":/src -w /src golang:1.26.6-bookworm \
-  sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -o voxywatch-probe-linux-amd64 ./cmd/voxywatch-probe"
+  sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -o voxywatch-capture-agent-linux-amd64 ./cmd/voxywatch-capture-agent"
 
 # arm64 (emulated ARM container, NOT native ARM validation — needs binfmt:
 #   docker run --privileged --rm tonistiigi/binfmt --install arm64 ):
 docker run --rm --platform linux/arm64 -v "$PWD":/src -w /src golang:1.26.6-bookworm \
-  sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags='-s -w' -o voxywatch-probe-linux-arm64 ./cmd/voxywatch-probe"
+  sh -c "apt-get update && apt-get install -y libpcap-dev && CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags='-s -w' -o voxywatch-capture-agent-linux-arm64 ./cmd/voxywatch-capture-agent"
 ```
 
-Published releases provide `voxywatch-probe-linux-amd64` and
-`voxywatch-probe-linux-arm64`; `install.sh` auto-detects the host architecture
+Published releases provide `voxywatch-capture-agent-linux-amd64` and
+`voxywatch-capture-agent-linux-arm64`; `install.sh` auto-detects the host architecture
 (`x86_64`/`aarch64`) and downloads the matching asset. Container builds exercise the
 target architecture but are not a substitute for native-host validation.
 
@@ -184,7 +213,7 @@ project against customer traffic without explicit authorization.
 ## Structure
 
 ```
-cmd/voxywatch-probe/   main (orchestrates)
+cmd/voxywatch-capture-agent/   main (orchestrates)
 internal/hep/          HEPv3 encoder
 internal/capture/      libpcap + SIP/RTP/RTCP classification
 internal/config/       flags + interface auto-detection

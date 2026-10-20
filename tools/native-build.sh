@@ -16,8 +16,8 @@ python3 tools/test_installer.py
 python3 tools/test_release_contract.py
 bash -n install.sh
 mkdir -p dist
-asset=voxywatch-probe-linux-$arch
-go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=$version" -o "dist/$asset" ./cmd/voxywatch-probe
+asset=voxywatch-capture-agent-linux-$arch
+go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=$version" -o "dist/$asset" ./cmd/voxywatch-capture-agent
 "dist/$asset" -version
 (cd dist && sha256sum "$asset" > "$asset.sha256")
 printf 'version=%s\narch=%s\ncommit=%s\n' "$version" "$arch" "${GITHUB_SHA:-$(git rev-parse HEAD)}" > "dist/$asset.build-info"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate synthetic cleartext UDP SIP and RTP for local probe validation.
+"""Generate synthetic cleartext UDP SIP and RTP for local capture-agent validation.
 
 The script sends raw packets rather than HEP records. It is intentionally a small
 traffic generator, not a SIP endpoint, media quality tool, protocol fuzzer, or a
@@ -34,7 +34,7 @@ def tone_frame(freq, n, t0):  # n samples; 160 samples equal 20 ms at 8 kHz.
     return bytes(out)
 
 def sdp(ip, port):
-    return ("v=0\r\n" f"o=- 0 0 IN IP4 {ip}\r\n" "s=probe-test\r\n"
+    return ("v=0\r\n" f"o=- 0 0 IN IP4 {ip}\r\n" "s=capture-agent-test\r\n"
             f"c=IN IP4 {ip}\r\n" "t=0 0\r\n"
             f"m=audio {port} RTP/AVP 0 101\r\n"
             "a=rtpmap:0 PCMU/8000\r\n" "a=sendrecv\r\n")
@@ -59,7 +59,7 @@ for i in range(NCALLS):
     cid = f"proberaw-{now}-{i}-{random.randint(1000,9999)}@voxyprobe"
     a = f"52155{random.randint(1000000,9999999)}"
     b = f"52155{random.randint(1000000,9999999)}"
-    frm = f'"Probe {i+1}" <sip:{a}@{DST}>;tag=p{random.randint(10**5,10**6)}'
+    frm = f'"Capture Agent {i+1}" <sip:{a}@{DST}>;tag=p{random.randint(10**5,10**6)}'
     to0 = f'<sip:{b}@{DST}>'; to1 = to0 + f';tag=q{random.randint(10**5,10**6)}'
     ruri = f"sip:{b}@{DST}"
     send_sip(sip(f"INVITE {ruri} SIP/2.0", frm, to0, cid, "1 INVITE",

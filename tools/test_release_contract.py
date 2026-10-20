@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ReleaseContract(unittest.TestCase):
     def test_version_defaults_agree(self):
-        main = (ROOT / 'cmd/voxywatch-probe/main.go').read_text()
+        main = (ROOT / 'cmd/voxywatch-capture-agent/main.go').read_text()
         version = re.search(r'^var version = "([^"]+)"$', main, re.M).group(1)
         self.assertRegex(version, r'^\d+\.\d+\.\d+$')
         helper = (ROOT / 'tools/native-build.sh').read_text()
@@ -28,6 +28,16 @@ class ReleaseContract(unittest.TestCase):
                          "CGO_ENABLED: '1'", 'if-no-files-found: error']:
             self.assertIn(expected, workflow)
         self.assertNotRegex(workflow, r'secrets\.|gpg\s|gh release')
+
+    def test_canonical_names_and_stable_repository(self):
+        installer = (ROOT / 'install.sh').read_text()
+        helper = (ROOT / 'tools/native-build.sh').read_text()
+        self.assertIn('REPO=VoxyWatch/voxywatch-probe', installer)
+        self.assertIn('module github.com/voxywatch/voxywatch-probe', (ROOT / 'go.mod').read_text())
+        self.assertIn('asset=voxywatch-capture-agent-linux-$arch', helper)
+        self.assertIn('./cmd/voxywatch-capture-agent', helper)
+        self.assertIn('name: capture-agent-linux-', (ROOT / '.github/workflows/native-build.yml').read_text())
+        self.assertIn('flag.NewFlagSet("voxywatch-capture-agent"', (ROOT / 'internal/config/config.go').read_text())
 
 
 if __name__ == '__main__':

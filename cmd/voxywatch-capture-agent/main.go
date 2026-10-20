@@ -1,4 +1,4 @@
-// Command voxywatch-probe passively captures observable SIP, RTP, and RTCP packets
+// Command voxywatch-capture-agent passively captures observable SIP, RTP, and RTCP packets
 // and forwards HEPv3 records to VoxyWatch. It does not alter PBX/SBC configuration.
 // It is licensed under FSL-1.1-Apache-2.0; see LICENSE.md for the use restrictions.
 package main
@@ -42,14 +42,14 @@ func writeStatus(path string, value any) {
 func main() {
 	log.SetFlags(log.LstdFlags)
 	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
-		fmt.Printf("voxywatch-probe %s\n", version)
+		fmt.Printf("voxywatch-capture-agent %s\n", version)
 		return
 	}
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	log.Printf("VoxyWatch Probe v%s — starting", version)
+	log.Printf("VoxyWatch Capture Agent v%s — starting", version)
 	if cfg.IfaceAuto {
 		log.Printf("[auto] default-route interface detected: %s", cfg.Iface)
 	}
@@ -95,7 +95,7 @@ func run(cfg *config.Config) error {
 		case <-ticker.C:
 			status()
 		case <-ch:
-			log.Printf("VoxyWatch Probe — stopping")
+			log.Printf("VoxyWatch Capture Agent — stopping")
 			cap.Close()
 			err = <-done
 			snd.Close()

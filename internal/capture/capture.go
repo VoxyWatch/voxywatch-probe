@@ -53,6 +53,7 @@ type Capturer struct {
 	// source. The portal-owned JSON is reloaded from pciPath; an empty set has no effect.
 	pciSSRCs     map[uint32]bool
 	pciPath      string
+	pciFallback  string
 	pciMtime     int64
 	pciLastCheck int64
 	pciFileInfo  os.FileInfo
@@ -138,16 +139,24 @@ func New(cfg *config.Config, snd *sender.Sender) (*Capturer, error) {
 			return nil, fmt.Errorf("BPF %q: %w", cfg.BPF, err)
 		}
 	}
-	pciPath := os.Getenv("VW_PROBE_PCI_FILE")
-	if pciPath == "" {
-		pciPath = "/etc/voxywatch-probe/pci_suppress.json"
-	}
+	pciPath, pciFallback := pciPaths()
 	c := &Capturer{cfg: cfg, handle: h, snd: snd, sipSet: map[uint16]bool{}, media: map[string]time.Time{}, dedup: map[[32]byte]time.Time{},
-		pciSSRCs: map[uint32]bool{}, pciPath: pciPath, stop: make(chan struct{})}
+		pciSSRCs: map[uint32]bool{}, pciPath: pciPath, pciFallback: pciFallback, stop: make(chan struct{})}
 	for _, p := range cfg.SIPPorts {
 		c.sipSet[p] = true
 	}
 	return c, nil
+}
+
+func pciPaths() (string, string) {
+	pciPath := os.Getenv("VOXYWATCH_PCI_FILE")
+	if pciPath == "" {
+		pciPath = os.Getenv("VW_PROBE_PCI_FILE") // Legacy caller compatibility.
+	}
+	if pciPath != "" {
+		return pciPath, ""
+	}
+	return "/etc/voxywatch-capture-agent/pci_suppress.json", "/etc/voxywatch-probe/pci_suppress.json"
 }
 
 // Close releases the libpcap handle. It may be called during signal handling.
@@ -255,7 +264,12 @@ func (c *Capturer) reloadPCI() {
 		return
 	}
 	c.pciLastCheck = now
-	fi, err := os.Stat(c.pciPath)
+	path := c.pciPath
+	fi, err := os.Stat(path)
+	if os.IsNotExist(err) && c.pciFallback != "" {
+		path = c.pciFallback
+		fi, err = os.Stat(path)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.pciSSRCs = map[uint32]bool{}
@@ -267,7 +281,7 @@ func (c *Capturer) reloadPCI() {
 	if c.pciFileInfo != nil && os.SameFile(fi, c.pciFileInfo) && fi.ModTime().UnixNano() == c.pciMtime && fi.Size() == c.pciFileInfo.Size() {
 		return
 	}
-	data, err := os.ReadFile(c.pciPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
@@ -561,7 +575,7 @@ func (c *Capturer) RtpDirs() (self, peer uint64) {
 	return c.counts.rtpSelf, c.counts.rtpPeer
 }
 
-// Health returns cumulative probe counters plus best-effort libpcap statistics.
+// Health returns cumulative capture-agent counters plus best-effort libpcap statistics.
 // Kernel statistics are unavailable on some capture sources and are not an SLA.
 func (c *Capturer) Health() (duplicate, untrusted, queueDropped, pciSuppressed uint64, kernelRecv, kernelDrop, ifaceDrop int) {
 	c.mu.RLock()

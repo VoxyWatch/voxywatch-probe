@@ -5,9 +5,9 @@
 **Vendor:** ·  **Type:** (PBX / SBC / proxy) ·  **Open source:** yes/no ·  **Status:** 📋/🧪/✅
 
 ## Summary
-One line: which capture paths apply (Probe / native HEP / SIPREC) and what you get.
+One line: which capture paths apply (Capture Agent / native HEP / SIPREC) and what you get.
 
-## Option A — VoxyWatch Probe (if you have host access or SPAN)
+## Option A — VoxyWatch Capture Agent (if you have host access or SPAN)
 - Where it's installed (SBC host / box with a mirror port).
 - Install steps (ideally the `install.sh`).
 - Verification (what you see in the portal).

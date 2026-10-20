@@ -1,5 +1,5 @@
 # Binario compilado
-/voxywatch-probe
+/voxywatch-capture-agent
 dist/
 *.exe
 
@@ -10,4 +10,8 @@ dist/
 *.swp
 .DS_Store
 
-voxywatch-probe-linux-*
+voxywatch-capture-agent-linux-*
+# Preserve ignored historical build artifacts; never rename published binaries.
+/voxywatch-probe
+/voxywatch-probe-linux-*
+__pycache__/

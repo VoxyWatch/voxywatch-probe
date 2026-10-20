@@ -19,8 +19,9 @@ elif name=="ldconfig": print("libpcap.so.0.8")
 elif name=="sleep": pass
 elif name=="curl":
     url=next(a for a in args if a.startswith("https://"))
-    if url.endswith("/latest"): print("https://github.com/VoxyWatch/voxywatch-probe/releases/tag/v0.2.1-beta",end="")
+    if url.endswith("/latest"): print("https://github.com/VoxyWatch/voxywatch-probe/releases/tag/"+os.environ.get("TEST_TAG","v1.0.1"),end="")
     else:
+        if os.environ.get("FAIL_DOWNLOAD"): sys.exit(22)
         target=pathlib.Path(args[args.index("-o")+1])
         data=b"#!/bin/sh\\necho new-binary\\n"
         if url.endswith(".sha256"):
@@ -28,19 +29,28 @@ elif name=="curl":
             data=(digest+"  "+url.split("/")[-1][:-7]+"\\n").encode()
         target.write_bytes(data)
 elif name=="systemctl":
+    old = args[-1] == "voxywatch-probe.service"
+    active = root/("old-active" if old else "active")
+    enabled = root/("old-enabled" if old else "enabled")
+    if args[0]=="daemon-reload" and os.environ.get("FAIL_RELOAD") and not (root/"failed").exists():
+        (root/"failed").touch(); sys.exit(1)
     if args[0]=="is-active":
         if os.environ.get("FAIL_HEALTH") and (root/"restarted").exists() and not (root/"failed").exists():
             (root/"failed").touch(); sys.exit(3)
-        sys.exit(0 if (root/"active").exists() else 3)
-    if args[0]=="is-enabled": sys.exit(0 if (root/"enabled").exists() else 1)
-    if args[0]=="enable": (root/"enabled").touch()
-    if args[0]=="disable": (root/"enabled").unlink(missing_ok=True)
-    if args[0]=="stop": (root/"active").unlink(missing_ok=True)
+        sys.exit(0 if active.exists() else 3)
+    if args[0]=="is-enabled": sys.exit(0 if enabled.exists() else 1)
+    if args[0]=="enable": enabled.touch()
+    if args[0]=="disable":
+        unit = root/("old-units/voxywatch-probe.service" if old else "units/probe.service")
+        if not unit.exists(): sys.exit("cannot disable an absent unit")
+        enabled.unlink(missing_ok=True)
+    if args[0]=="stop": active.unlink(missing_ok=True)
     if args[0]=="restart":
         (root/"restarted").touch()
         if os.environ.get("FAIL_RESTART") and not (root/"failed").exists():
             (root/"failed").touch(); sys.exit(1)
-        (root/"active").touch()
+        if not old and (root/"old-active").exists(): sys.exit("duplicate daemon")
+        active.touch()
 else: sys.exit("unexpected mock")
 '''
 
@@ -53,7 +63,10 @@ class Installer(unittest.TestCase):
         self.bin = self.root / "bin/probe"
         self.unit = self.root / "units/probe.service"
         self.config = self.root / "config/options"
-        for path in (self.bin, self.unit, self.config):
+        self.old_bin = self.root / "old-bin/voxywatch-probe"
+        self.old_unit = self.root / "old-units/voxywatch-probe.service"
+        self.old_config = self.root / "old-config/options"
+        for path in (self.bin, self.unit, self.config, self.old_bin, self.old_unit, self.old_config):
             path.parent.mkdir()
         mock = self.root / "mock"
         mock.mkdir()
@@ -62,10 +75,15 @@ class Installer(unittest.TestCase):
             p.write_text(MOCK)
             p.chmod(0o755)
         self.env = dict(os.environ, FIXTURE=str(self.root), PATH=f"{mock}:{os.environ['PATH']}")
-        script = SOURCE.read_text().replace("BIN=/usr/local/bin/voxywatch-probe", f"BIN={self.bin}")
-        script = script.replace("UNIT=/etc/systemd/system/voxywatch-probe.service", f"UNIT={self.unit}")
-        script = script.replace("CONFIG=/etc/voxywatch-probe/options", f"CONFIG={self.config}")
+        script = SOURCE.read_text().replace("BIN=/usr/local/bin/voxywatch-capture-agent", f"BIN={self.bin}")
+        script = script.replace("UNIT=/etc/systemd/system/voxywatch-capture-agent.service", f"UNIT={self.unit}")
+        script = script.replace("CONFIG=/etc/voxywatch-capture-agent/options", f"CONFIG={self.config}")
         script = script.replace("LOCK=/run/voxywatch-probe-install/install.lock", f"LOCK={self.root}/private/install.lock")
+        script = script.replace("OLD_BIN=/usr/local/bin/voxywatch-probe", f"OLD_BIN={self.old_bin}")
+        script = script.replace("OLD_UNIT=/etc/systemd/system/voxywatch-probe.service", f"OLD_UNIT={self.old_unit}")
+        script = script.replace("OLD_CONFIG=/etc/voxywatch-probe/options", f"OLD_CONFIG={self.old_config}")
+        # Fail closed if a future destination rename escapes the hermetic fixture.
+        self.assertNotRegex(script, r"(?m)^(?:OLD_)?(?:BIN|UNIT|CONFIG|LOCK)=/(?:usr|etc|run)/")
         self.script = self.root / "install.sh"
         self.script.write_text(script)
 
@@ -99,11 +117,11 @@ class Installer(unittest.TestCase):
         self.run_install()
         self.assertEqual(old, self.unit.read_bytes())
         self.assertNotEqual(inode, self.bin.stat().st_ino)
-        self.assertIn("RuntimeDirectory=voxywatch-probe", self.unit.read_text())
+        self.assertIn("RuntimeDirectory=voxywatch-capture-agent", self.unit.read_text())
         self.assertEqual((self.root / "calls").read_text().count("systemctl restart "), 2)
         calls = (self.root / "calls").read_text()
         self.assertNotIn("latest/download", calls)
-        self.assertIn("/download/v0.2.1-beta/", calls)
+        self.assertIn("/download/v1.0.1/", calls)
 
     def test_hash_mismatch(self):
         self.run_install("--server", "localhost:9060", BAD_HASH="1", ok=False)
@@ -144,7 +162,7 @@ class Installer(unittest.TestCase):
     def test_arm64_and_zero_site(self):
         self.run_install("--server", "localhost:1", "--site", "0", TEST_ARCH="aarch64")
         self.assertIn("-capture-id 0", self.unit.read_text())
-        self.assertIn("voxywatch-probe-linux-arm64", (self.root / "calls").read_text())
+        self.assertIn("voxywatch-capture-agent-linux-arm64", (self.root / "calls").read_text())
 
     def test_config_is_not_executable(self):
         self.config.write_text("server\t$(touch /should-not-exist)\n")
@@ -195,7 +213,7 @@ WantedBy=multi-user.target
             current = self.unit.read_text()
             self.assertIn("-hs collector.example:9060 -i eth9 -m siprtcp -t tcp -profile span -media-policy heuristic", current)
             self.assertIn("-capture-id 42", current)
-            self.assertIn("RuntimeDirectory=voxywatch-probe", current)
+            self.assertIn("RuntimeDirectory=voxywatch-capture-agent", current)
             if trusted:
                 self.assertIn(trusted, current)
             self.unit.write_text(old + "# custom\n")
@@ -230,6 +248,97 @@ WantedBy=multi-user.target
         self.assertIn("DynamicUser", out)
         self.assertEqual(self.config.parent.stat().st_mode & 0o777, 0o700)
         self.assertFalse(self.bin.exists())
+
+    def seed_old(self, active=True, enabled=True):
+        self.run_install("--server", "collector.example:9060", "--site", "42")
+        old = self.unit.read_text().replace(str(self.bin), str(self.old_bin))
+        old = old.replace(" -status-file /run/voxywatch-capture-agent/status.json", "")
+        old = old.replace("voxywatch-capture-agent", "voxywatch-probe").replace("VoxyWatch Capture Agent", "VoxyWatch Probe")
+        self.old_unit.write_text(old)
+        self.old_bin.write_bytes(b"old-binary")
+        self.old_config.write_bytes(self.config.read_bytes())
+        for path in (self.bin, self.unit, self.config):
+            path.unlink()
+        for name in ("active", "enabled", "restarted", "failed"):
+            (self.root / name).unlink(missing_ok=True)
+        for name, state in (("old-active", active), ("old-enabled", enabled)):
+            (self.root / name).unlink(missing_ok=True)
+            if state:
+                (self.root / name).touch()
+        return [p.read_bytes() for p in (self.old_bin, self.old_unit, self.old_config)]
+
+    def test_migration_preserves_all_service_states_and_options(self):
+        for active, enabled in ((True, True), (True, False), (False, True), (False, False)):
+            with self.subTest(active=active, enabled=enabled):
+                # Each matrix cell is an independent host.
+                host = Installer()
+                host.setUp()
+                try:
+                    before = host.seed_old(active, enabled)
+                    host.run_install()
+                    self.assertEqual((host.root / "active").exists(), active)
+                    self.assertEqual((host.root / "enabled").exists(), enabled)
+                    self.assertFalse((host.root / "old-active").exists())
+                    self.assertFalse((host.root / "old-enabled").exists())
+                    self.assertEqual(host.config.read_bytes(), before[2])
+                    for path, data in zip((host.old_bin, host.old_unit, host.old_config), before):
+                        self.assertFalse(path.exists())
+                        self.assertEqual(Path(str(path)+".pre-capture-agent").read_bytes(), data)
+                    host.run_install()  # Canonical reinstall works after migration.
+                finally:
+                    host.doCleanups()
+
+    def test_migration_failure_restores_old_files_and_service_state(self):
+        for enabled in (False, True):
+            self.seed_old(True, enabled)
+            before = [p.read_bytes() for p in (self.old_bin, self.old_unit, self.old_config)]
+            self.run_install(FAIL_RESTART="1", ok=False)
+            self.assertEqual(before, [p.read_bytes() for p in (self.old_bin, self.old_unit, self.old_config)])
+            self.assertTrue((self.root / "old-active").exists())
+            self.assertEqual((self.root / "old-enabled").exists(), enabled)
+            self.assertFalse((self.root / "active").exists())
+            for path in (self.bin, self.unit, self.config):
+                self.assertFalse(path.exists())
+            # Remove legacy fixture only, before reseeding this test's next cell.
+            for path in (self.old_bin, self.old_unit, self.old_config):
+                path.unlink()
+            (self.root / "old-active").unlink(missing_ok=True)
+            (self.root / "old-enabled").unlink(missing_ok=True)
+
+    def test_migration_reload_failure_restores_inactive_states(self):
+        for enabled in (False, True):
+            host = Installer()
+            host.setUp()
+            try:
+                before = host.seed_old(False, enabled)
+                host.run_install(FAIL_RELOAD="1", ok=False)
+                self.assertEqual(before, [p.read_bytes() for p in (host.old_bin, host.old_unit, host.old_config)])
+                self.assertFalse((host.root / "old-active").exists())
+                self.assertEqual((host.root / "old-enabled").exists(), enabled)
+                self.assertFalse((host.root / "active").exists())
+                self.assertFalse((host.root / "enabled").exists())
+            finally:
+                host.doCleanups()
+
+    def test_migration_refuses_dual_custom_and_symlink_inputs(self):
+        self.seed_old()
+        self.bin.write_text("second-install")
+        self.assertIn("dual", self.run_install(ok=False))
+        self.bin.unlink()
+        self.old_unit.write_text(self.old_unit.read_text() + "# custom\n")
+        self.assertIn("customized", self.run_install(ok=False))
+        self.old_config.unlink()
+        self.old_config.symlink_to(self.old_bin)
+        self.assertIn("symlink", self.run_install(ok=False))
+        self.assertTrue((self.root / "old-active").exists())
+
+    def test_legacy_assets_only_for_explicit_immutable_tags(self):
+        for tag in ("v0.2.1-beta", "v1.0.0"):
+            self.run_install("--server", "localhost:9060", TEST_TAG=tag)
+            calls = (self.root / "calls").read_text()
+            self.assertIn(f"/download/{tag}/voxywatch-probe-linux-amd64", calls)
+        self.run_install(TEST_TAG="v1.0.2", FAIL_DOWNLOAD="1", ok=False)
+        self.assertNotIn("/download/v1.0.2/voxywatch-probe", (self.root / "calls").read_text())
 
 
 if __name__ == "__main__":
