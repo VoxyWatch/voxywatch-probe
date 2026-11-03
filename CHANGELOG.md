@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1 — 2026-11-03
+
+- Rename the collector to VoxyWatch Capture Agent while keeping the repository URL.
+- Preserve configured options and service state when migrating a managed legacy
+  installation; retain compatibility with earlier release asset names.
+- Keep capture and privacy policies unchanged; validate native amd64/ARM64 builds.
+
 ## 1.0.0 — 2026-09-11
 
 - Prepare the stable release line with unchanged packet-capture behavior and

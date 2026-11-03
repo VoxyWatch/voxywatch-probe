@@ -9,7 +9,7 @@ on:
       version:
         description: Binary version (without v; builds only, never publishes)
         required: true
-        default: 1.0.0
+        default: 1.0.1
         type: string
 
 permissions:
@@ -31,7 +31,7 @@ jobs:
     container: golang:1.26.6-bookworm
     env:
       CGO_ENABLED: '1'
-      BUILD_VERSION: ${{ inputs.version || '1.0.0' }}
+      BUILD_VERSION: ${{ inputs.version || '1.0.1' }}
       EXPECTED_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node24

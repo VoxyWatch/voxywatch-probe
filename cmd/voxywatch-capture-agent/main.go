@@ -18,7 +18,7 @@ import (
 	"github.com/voxywatch/voxywatch-probe/internal/sender"
 )
 
-var version = "1.0.0"
+var version = "1.0.1"
 
 // writeStatus atomically replaces the optional, best-effort runtime snapshot.
 // A status-write failure must not interrupt capture or delivery.

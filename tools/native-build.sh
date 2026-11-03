@@ -2,7 +2,7 @@
 # CI builds artifacts only. A release owner verifies both architectures and signs
 # their exact SHA-256 hashes separately; this script cannot publish or sign.
 set -euo pipefail
-version=${BUILD_VERSION:-1.0.0}
+version=${BUILD_VERSION:-1.0.1}
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?$ ]] || {
   echo 'Invalid BUILD_VERSION' >&2; exit 1;
 }
